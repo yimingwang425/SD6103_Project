@@ -1,3 +1,4 @@
+# 9.17终版，有中英文注释
 import pandas as pd
 import glob
 import os
@@ -13,7 +14,7 @@ REMOVED_PATH = os.path.join(BASE_DIR, "processed_data", "resale", "resale_remove
 csv_files = sorted(glob.glob(os.path.join(RAW_DIR, "*.csv")))
 dfs = [pd.read_csv(f) for f in csv_files]
 df = pd.concat(dfs, ignore_index=True)
-print(f" Merged: {len(df)} rows from {len(csv_files)} files")
+print(f"Merged: {len(df)} rows from {len(csv_files)} files")
 
 # Collect all removed rows
 removed = []
@@ -113,5 +114,5 @@ df = df[
 df.to_csv(OUTPUT_PATH, index=False)
 removed_df = pd.DataFrame(removed)
 removed_df.to_csv(REMOVED_PATH, index=False)
-print(f"\nDone! Saved {len(df)} rows to {OUTPUT_PATH}")
+print(f"\nSaved {len(df)} rows to {OUTPUT_PATH}")
 print(f"Removed {len(removed_df)} rows to {REMOVED_PATH}")
