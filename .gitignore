@@ -1,5 +1,23 @@
+# Python
 __pycache__/
+*.pyc
 .venv/
 .env
+
+# OS / editor
 .DS_Store
 .vscode/
+
+# WorkBuddy session data
+.workbuddy/
+
+# Heavy / non-deliverable data — excluded from the repo
+data/raw_hdb/
+data/s1/
+data/s2/
+data/s3/
+data/s4/
+data/s5/
+
+# Portable PostgreSQL binaries (too large to version)
+tools/
