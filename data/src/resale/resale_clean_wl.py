@@ -4,10 +4,10 @@ import os
 import re
 
 # ── Paths ──
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 RAW_DIR = os.path.join(BASE_DIR, "raw_data", "ResaleFlatPrices")
-OUTPUT_PATH = os.path.join(BASE_DIR, "processed_data", "resale_cleaned.csv")
-REMOVED_PATH = os.path.join(BASE_DIR, "processed_data", "resale_removed.csv")
+OUTPUT_PATH = os.path.join(BASE_DIR, "processed_data", "resale", "resale_cleaned_wl.csv")
+REMOVED_PATH = os.path.join(BASE_DIR, "processed_data", "resale", "resale_removed_wl.csv")
 
 # ── Step 1: Load & merge all CSVs ──
 csv_files = sorted(glob.glob(os.path.join(RAW_DIR, "*.csv")))
