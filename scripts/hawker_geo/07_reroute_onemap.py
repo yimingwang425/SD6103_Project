@@ -152,13 +152,13 @@ def fetch_one(token: str,
 
 
 def main() -> int:
-    here = Path(__file__).resolve().parent
+    here = Path(__file__).resolve().parents[2]  # repo root
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pairs", default=str(here / "output" / "hdb_hawker_proximity.csv"))
-    parser.add_argument("--blocks", default=str(here / "output" / "hdb_block.csv"))
-    parser.add_argument("--hawker", default=str(here / "output" / "hawker_centre.csv"))
-    parser.add_argument("--outdir", default=str(here / "output"))
-    parser.add_argument("--cache", default=str(here / "data" / "onemap_full.jsonl"))
+    parser.add_argument("--pairs", default=str(here / "data" / "hawker_geo" / "hdb_hawker_proximity.csv"))
+    parser.add_argument("--blocks", default=str(here / "data" / "hawker_geo" / "hdb_block.csv"))
+    parser.add_argument("--hawker", default=str(here / "data" / "hawker_geo" / "hawker_centre.csv"))
+    parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
+    parser.add_argument("--cache", default=str(here / "data" / "hawker_geo" / "onemap_full.jsonl"))
     parser.add_argument("--token-env", default="ONEMAP_TOKEN")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--interval", type=float, default=0.10,
@@ -192,7 +192,7 @@ def main() -> int:
     print(f"[pairs] {len(pairs)} materialised block-hawker pairs")
 
     # OSRM reference values, used for the comparison and for the snap offset.
-    with (here / "output" / "hdb_hawker_walk.csv").open(encoding="utf-8") as handle:
+    with (here / "data" / "hawker_geo" / "hdb_hawker_walk.csv").open(encoding="utf-8") as handle:
         osrm = {(r["block_id"], r["hawker_id"]): r for r in csv.DictReader(handle)}
 
     # ---------------- which pairs are actually worth re-routing? ----------------
@@ -211,7 +211,7 @@ def main() -> int:
     # correcting one distance can change *which* centre ends up nearest.
     targets = pairs
     if args.select == "risk":
-        nearest_path = here / "output" / "hdb_block_nearest.csv"
+        nearest_path = here / "data" / "hawker_geo" / "hdb_block_nearest.csv"
         at_risk: set[str] = set()
         if nearest_path.exists():
             with nearest_path.open(encoding="utf-8") as handle:
