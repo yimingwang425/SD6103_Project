@@ -21,3 +21,12 @@ data/s5/
 
 # Portable PostgreSQL binaries (too large to version)
 tools/
+
+# Hawker-geo: derived files that rebuild in seconds from what IS committed.
+# Both routing caches ARE committed on purpose - osrm_cache.jsonl saves a
+# 37-minute re-route, onemap_full.jsonl saves a 2-hour one (OneMap has no
+# matrix endpoint, so every pair is a separate request).
+data/hawker_geo/hdb_hawker_walk.csv
+data/hawker_geo/resale_transaction.csv
+data/hawker_geo/onemap_cache.jsonl
+data/hawker_geo/hdb_hawker_walk_onemap.csv
