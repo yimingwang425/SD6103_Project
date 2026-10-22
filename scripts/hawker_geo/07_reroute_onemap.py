@@ -20,10 +20,26 @@ definition, one story.
 Cost
 ----
 OneMap has no matrix endpoint, so this is one HTTP request per pair: 63,340
-requests. Measured throughput on the public endpoint is ~10-20 req/s with a
-small amount of 429 backpressure, so the full run is roughly 1.5-2.5 hours. The
-run is resumable at any point - every completed pair is appended to
-data/onemap_full.jsonl, and a re-run skips whatever is already there.
+requests. The run is resumable at any point - every completed pair is appended
+to data/hawker_geo/onemap_full.jsonl, and a re-run skips whatever is there.
+
+Throughput was measured against the live endpoint on 2026-10-22, and the
+earlier "10-20 req/s" guess in this docstring was simply wrong:
+
+    burst, 60 requests   22-35 successful req/s  (the rest are 429)
+    sustained            2.2-2.4 successful req/s
+
+The server throttles on *request rate*, not on concurrency, so raising the
+worker count does not help - 14 workers measured 2.2 req/s with three times
+the 429s of 6 workers. The sustainable ceiling for one token is therefore
+about 2.3 req/s, i.e. roughly 6-7 hours for the full relation, not 1.5-2.5.
+Budget a night, not an afternoon.
+
+(What *was* fixable was this script's own pacing: the original limiter widened
+1.25x per 429 but recovered only 0.92x per 40 successes, and the 429 path slept
+3+2*attempt seconds per worker. Together those held the run at 1.1 req/s
+against a server willing to serve 2.3 - see RateLimiter for the measured
+before/after.)
 
 Definition caveat
 -----------------
@@ -68,11 +84,26 @@ USER_AGENT = "ntu-datasys-project/1.0 (student coursework)"
 
 
 class RateLimiter:
-    """Adaptive global pacer: widens the interval on 429, narrows it on success."""
+    """Adaptive global pacer: widens the interval on 429, narrows it on success.
 
-    def __init__(self, interval: float = 0.10,
-                 min_interval: float = 0.05,
-                 max_interval: float = 2.0) -> None:
+    The tuning here is not arbitrary - it was measured against the live endpoint
+    (2026-10-22). OneMap answers a 60-request burst at 22-35 successful req/s
+    and simply returns 429 for the rest, so the service is nowhere near the
+    bottleneck. What *was* the bottleneck is this class as originally written:
+    it widened by 1.25x on every 429 but only narrowed by 0.92x per 40
+    successes, so any early burst of 429s pushed the interval to the 2.0 s cap
+    and it then needed ~680 successes to walk back down - during which the whole
+    run crawled at ~1.1 req/s instead of the 4-5 req/s the server allows.
+
+    So: a gentler multiplicative increase (1.15x), a much faster recovery
+    (0.97x every 10 successes) and a lower cap (1.0 s, i.e. never slower than
+    1 req/s). The published quota is 250 calls/min = 4.2 req/s, which is what
+    the run should settle at.
+    """
+
+    def __init__(self, interval: float = 0.20,
+                 min_interval: float = 0.10,
+                 max_interval: float = 1.0) -> None:
         self.interval = interval
         self.min_interval = min_interval
         self.max_interval = max_interval
@@ -95,15 +126,17 @@ class RateLimiter:
     def note_success(self) -> None:
         with self.lock:
             self.successes += 1
-            # Recover the interval gradually: a single 429 should cost a few
-            # seconds, not permanently halve the throughput of a 2-hour run.
-            if self.successes % 40 == 0 and self.interval > self.min_interval:
-                self.interval = max(self.min_interval, self.interval * 0.92)
+            # Recover quickly: 10 successes buy back 3% of the interval, so the
+            # pacer walks down from the cap to the floor in ~200 requests
+            # instead of ~680. A brief 429 burst should cost seconds, not the
+            # throughput of the whole run.
+            if self.successes % 10 == 0 and self.interval > self.min_interval:
+                self.interval = max(self.min_interval, self.interval * 0.97)
 
     def note_throttle(self) -> None:
         with self.lock:
             self.throttled += 1
-            self.interval = min(self.max_interval, self.interval * 1.25)
+            self.interval = min(self.max_interval, self.interval * 1.15)
 
 
 def fetch_one(token: str,
@@ -140,7 +173,19 @@ def fetch_one(token: str,
                 return None, "unauthorised"
             if exc.code == 429:
                 limiter.note_throttle()
-                time.sleep(3 + attempt * 2)
+                # The old pause was 3 + 2*attempt seconds (3,5,7,9,11). That was
+                # the single biggest throughput killer: with only a handful of
+                # workers, a few 429s parked every thread for seconds at a time
+                # and the run measured 1.1 req/s against a server that happily
+                # serves 5+. Honour Retry-After when it is sent, otherwise back
+                # off briefly - the global pacer is already widening every
+                # worker's slot, so this does not need to be generous as well.
+                retry_after = exc.headers.get("Retry-After")
+                try:
+                    pause = float(retry_after) if retry_after else 0.4 * (2 ** attempt)
+                except (TypeError, ValueError):
+                    pause = 0.4 * (2 ** attempt)
+                time.sleep(min(pause, 4.0))
                 status = "throttled"
                 continue
             status = f"error:{exc.code}"
@@ -160,17 +205,22 @@ def main() -> int:
     parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
     parser.add_argument("--cache", default=str(here / "data" / "hawker_geo" / "onemap_full.jsonl"))
     parser.add_argument("--token-env", default="ONEMAP_TOKEN")
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--interval", type=float, default=0.10,
-                        help="initial seconds between requests (global)")
+    parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--interval", type=float, default=0.20,
+                        help="initial seconds between requests, globally "
+                             "(0.20 = 5 req/s, near the published 250 calls/min)")
+    parser.add_argument("--max-interval", type=float, default=1.0,
+                        help="slowest the pacer may become; 1.0 = a 1 req/s "
+                             "floor, so a 429 burst can never collapse the run")
     parser.add_argument("--merge-only", action="store_true",
                         help="skip fetching, rebuild the CSVs from the cache")
     parser.add_argument("--limit", type=int, default=0,
                         help="stop after N new pairs (0 = all)")
     parser.add_argument("--select", choices=("all", "risk"), default="risk",
-                        help="'all' re-routes every pair (63k requests, ~12 h at "
-                             "the observed 1.3 req/s); 'risk' re-routes only the "
-                             "pairs that can change a proximity class")
+                        help="'all' re-routes every pair (63k requests, ~7-8 h "
+                             "at the measured 2.3 req/s sustained); 'risk' "
+                             "re-routes only the pairs that can change a "
+                             "proximity class")
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
@@ -261,7 +311,8 @@ def main() -> int:
             todo = todo[:args.limit]
         print(f"[fetch] {len(todo)} to go with {args.workers} workers")
 
-        limiter = RateLimiter(interval=args.interval)
+        limiter = RateLimiter(interval=args.interval,
+                              max_interval=args.max_interval)
         lock = threading.Lock()
         started = time.monotonic()
         counts = {"ok": 0, "no_route": 0, "other": 0}
