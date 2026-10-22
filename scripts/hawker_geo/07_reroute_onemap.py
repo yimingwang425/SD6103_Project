@@ -152,13 +152,13 @@ def fetch_one(token: str,
 
 
 def main() -> int:
-    here = Path(__file__).resolve().parents[2]  # repo root (scripts/hawker_geo -> scripts -> .)
+    here = Path(__file__).resolve().parent
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pairs", default=str(here / "data" / "hawker_geo" / "hdb_hawker_proximity.csv"))
-    parser.add_argument("--blocks", default=str(here / "data" / "hawker_geo" / "hdb_block.csv"))
-    parser.add_argument("--hawker", default=str(here / "data" / "hawker_geo" / "hawker_centre.csv"))
-    parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
-    parser.add_argument("--cache", default=str(here / "data" / "hawker_geo" / "onemap_full.jsonl"))
+    parser.add_argument("--pairs", default=str(here / "output" / "hdb_hawker_proximity.csv"))
+    parser.add_argument("--blocks", default=str(here / "output" / "hdb_block.csv"))
+    parser.add_argument("--hawker", default=str(here / "output" / "hawker_centre.csv"))
+    parser.add_argument("--outdir", default=str(here / "output"))
+    parser.add_argument("--cache", default=str(here / "data" / "onemap_full.jsonl"))
     parser.add_argument("--token-env", default="ONEMAP_TOKEN")
     parser.add_argument("--workers", type=int, default=4)
     parser.add_argument("--interval", type=float, default=0.10,
@@ -192,7 +192,7 @@ def main() -> int:
     print(f"[pairs] {len(pairs)} materialised block-hawker pairs")
 
     # OSRM reference values, used for the comparison and for the snap offset.
-    with (here / "data" / "hawker_geo" / "hdb_hawker_walk.csv").open(encoding="utf-8") as handle:
+    with (here / "output" / "hdb_hawker_walk.csv").open(encoding="utf-8") as handle:
         osrm = {(r["block_id"], r["hawker_id"]): r for r in csv.DictReader(handle)}
 
     # ---------------- which pairs are actually worth re-routing? ----------------
@@ -211,7 +211,7 @@ def main() -> int:
     # correcting one distance can change *which* centre ends up nearest.
     targets = pairs
     if args.select == "risk":
-        nearest_path = here / "data" / "hawker_geo" / "hdb_block_nearest.csv"
+        nearest_path = here / "output" / "hdb_block_nearest.csv"
         at_risk: set[str] = set()
         if nearest_path.exists():
             with nearest_path.open(encoding="utf-8") as handle:
@@ -342,13 +342,17 @@ def main() -> int:
             "straight_line_m", "snap_offset_m", "detour_ratio",
             "distance_source",
         ])
-        for row in rows:
-            key = (row["block_id"], row["hawker_id"])
-            reference = osrm.get(key)
-            if reference is None:
-                continue
-            if row["onemap_m"] != "":
-                distance = float(row["onemap_m"])
+        # Iterate the FULL relation, not just the re-routed subset: the point
+        # of this file is to be a drop-in replacement for hdb_hawker_walk.csv,
+        # so every pair must be present. Pairs we did not re-route keep the
+        # OSRM value and say so in distance_source.
+        for key, reference in osrm.items():
+            record = done.get(key)
+            onemap_m = None
+            if record is not None and record.get("onemap_raw_m") is not None:
+                onemap_m = float(record["onemap_raw_m"]) + float(reference["snap_offset_m"])
+            if onemap_m is not None and onemap_m > 0:
+                distance = onemap_m
                 source = "onemap"
                 usable += 1
             else:
@@ -377,7 +381,7 @@ def main() -> int:
     print(f"  no_route               : {sum(1 for r in rows if r['status'] == 'no_route')}")
     print(f"  other                  : {sum(1 for r in rows if r['status'] not in ('ok', 'no_route'))}")
     print(f"used OneMap distance     : {usable}")
-    print(f"fell back to OSRM        : {len(rows) - usable}")
+    print(f"kept OSRM (not re-routed): {len(osrm) - usable}")
     if ok:
         diffs = [100 * (float(r["onemap_m"]) - float(r["osrm_m"])) / float(r["osrm_m"])
                  for r in ok]
