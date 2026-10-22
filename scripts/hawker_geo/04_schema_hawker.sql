@@ -5,6 +5,11 @@
 -- This is a *fragment* to be merged into the team's schema. It covers the two
 -- tables this workstream produces, plus the hdb_block table they depend on.
 -- Load order matters: hdb_block and hawker_centre first, then the relation.
+--
+-- The runnable Q4/Q5 queries - with their verified results inline, plus the
+-- sensitivity and coverage variants - live in 09_queries_hawker.sql. The Q4/Q5
+-- statements at the bottom of this file are kept only as schema-side
+-- documentation, next to the constraints and views they rely on.
 -- ===========================================================================
 
 -- ---------------------------------------------------------------------------
@@ -12,6 +17,16 @@
 -- Sourced from siteselect_sg/hdb.csv. `postal_code` is deliberately NOT unique:
 -- 14 postal codes are shared by more than one block in the source file, and 3
 -- rows have the literal string 'NIL', so the surrogate key is required.
+--
+-- NOTE ON `town`: this column holds the 2-3 letter HDB town CODE (AMK, CT,
+-- KWN, SGN, ...), because that is what the source file provides. The resale
+-- file, by contrast, spells the same 26 towns out in full ("ANG MO KIO",
+-- "CENTRAL AREA"). Both encodings are 1:1 over exactly 26 values and the
+-- mapping is unambiguous (verified: no code ever maps to two names), but they
+-- do NOT join to each other on the raw text. Anything that needs the full name
+-- should go through the town_name view at the bottom of this file rather than
+-- string-matching. A proper fix is a town reference table with FKs from both
+-- sides; that is a change to the master schema and is left to the team.
 -- ---------------------------------------------------------------------------
 CREATE TABLE hdb_block (
     block_id    CHAR(6)      PRIMARY KEY,
@@ -250,6 +265,47 @@ FROM   hawker_proximity p
 GROUP  BY p.block_id;
 
 -- ---------------------------------------------------------------------------
+-- Town code -> full planning-town name.
+--
+-- Needed only because the two source files disagree on vocabulary (see the
+-- note on hdb_block.town above). Kept as a view over a VALUES list rather
+-- than a table so this fragment stays purely additive: it cannot collide with
+-- a town dimension the master schema may already define. If the team does add
+-- such a table, replace this view with it and point both hdb_block.town and
+-- resale_transaction.town at it with foreign keys.
+--
+-- All 26 rows verified against the joined data: every block code maps to
+-- exactly one name, and every name is reached by exactly one code.
+-- ---------------------------------------------------------------------------
+CREATE VIEW town_name (town_code, town_name) AS
+VALUES ('AMK', 'ANG MO KIO'),
+       ('BB',  'BUKIT BATOK'),
+       ('BD',  'BEDOK'),
+       ('BH',  'BISHAN'),
+       ('BM',  'BUKIT MERAH'),
+       ('BP',  'BUKIT PANJANG'),
+       ('BT',  'BUKIT TIMAH'),
+       ('CCK', 'CHOA CHU KANG'),
+       ('CL',  'CLEMENTI'),
+       ('CT',  'CENTRAL AREA'),
+       ('GL',  'GEYLANG'),
+       ('HG',  'HOUGANG'),
+       ('JE',  'JURONG EAST'),
+       ('JW',  'JURONG WEST'),
+       ('KWN', 'KALLANG/WHAMPOA'),
+       ('MP',  'MARINE PARADE'),
+       ('PG',  'PUNGGOL'),
+       ('PRC', 'PASIR RIS'),
+       ('QT',  'QUEENSTOWN'),
+       ('SB',  'SEMBAWANG'),
+       ('SGN', 'SERANGOON'),
+       ('SK',  'SENGKANG'),
+       ('TAP', 'TAMPINES'),
+       ('TP',  'TOA PAYOH'),
+       ('WL',  'WOODLANDS'),
+       ('YS',  'YISHUN');
+
+-- ---------------------------------------------------------------------------
 -- Q4 - median resale price per proximity class, within town.
 --
 -- Two deliberate restrictions:
@@ -258,9 +314,18 @@ GROUP  BY p.block_id;
 --     lease age rather than by location;
 --   * HAVING n >= 30 keeps a town only when every class has enough
 --     transactions for a median to mean anything. This is what reduces the
---     result from 26 towns to 22 - not missing data. The four that drop out
---     (BT, MP have no class-3 flats; PG, SGN have no class-1 flats) are a
---     geographic fact, and are worth stating explicitly in the report.
+--     result from 26 towns to 21 - not missing data. The five that drop out
+--     fall into two different categories and should be described separately
+--     in the report:
+--       structural (the class is empty, a real geographic fact)
+--         BT  - no class-3 flats at all      (n3 = 0)
+--         MP  - no class-3 flats at all      (n3 = 0)
+--         PG  - no class-1 flats at all      (n1 = 0)
+--         SGN - only class-3 flats           (n1 = n2 = 0)
+--       thin (the class exists but is too small to summarise)
+--         CT  - Central Area, n3 = 10, against n1 = 440 and n2 = 80
+--     CT is worth a sentence: it is the one town where the "far from a hawker
+--     centre" group is not empty but is simply too rare to price.
 -- ---------------------------------------------------------------------------
 WITH priced AS (
     SELECT b.town,
