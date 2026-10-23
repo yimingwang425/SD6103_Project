@@ -191,7 +191,12 @@ def fetch_one(token: str,
             status = f"error:{exc.code}"
             time.sleep(1 + attempt)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            status = f"error:{type(exc).__name__}"
+            # Keep the reason. "error:URLError" alone is undiagnosable: it covers
+            # DNS failure, connection reset, TLS problems, permission denied and
+            # timeouts alike, and on 2026-10-23 the cache filled with 14,450 of
+            # them without ever saying which one it was.
+            reason = getattr(exc, "reason", exc)
+            status = f"error:{type(exc).__name__}:{str(reason)[:80]}"
             time.sleep(1 + attempt)
     return None, status
 
@@ -286,7 +291,18 @@ def main() -> int:
 
     cache_path = Path(args.cache)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    # Only a usable distance counts as "done". A failed request must stay in the
+    # todo list, otherwise the cache quietly turns a transient network outage
+    # into permanent missing data: the pair is written once with a null
+    # distance, is then treated as already fetched on every later run, and is
+    # never retried. That is exactly what happened on 2026-10-23 - 14,450
+    # consecutive URLErrors were cached as if they were results.
+    #
+    # "no_route" is different: OneMap answered, and the answer is that no
+    # walking route exists, so re-asking cannot help.
+    TERMINAL = {"ok", "no_route"}
     done: dict[tuple[str, str], dict] = {}
+    skipped = 0
     if cache_path.exists():
         with cache_path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -297,8 +313,15 @@ def main() -> int:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if record.get("status") not in TERMINAL:
+                    skipped += 1
+                    continue
+                if record.get("status") == "ok" and record.get("onemap_raw_m") is None:
+                    skipped += 1
+                    continue
                 done[(record["block_id"], record["hawker_id"])] = record
-        print(f"[cache] {len(done)} pairs already fetched")
+        print(f"[cache] {len(done)} pairs already fetched"
+              + (f", {skipped} failed records ignored (will retry)" if skipped else ""))
 
     if not args.merge_only:
         token = os.environ.get(args.token_env, "").strip()
@@ -316,6 +339,7 @@ def main() -> int:
         lock = threading.Lock()
         started = time.monotonic()
         counts = {"ok": 0, "no_route": 0, "other": 0}
+        streak = {"fails": 0}
 
         def work(row: dict) -> None:
             block_id, hawker_id = row["block_id"], row["hawker_id"]
@@ -332,6 +356,22 @@ def main() -> int:
                 done[(block_id, hawker_id)] = record
                 counts["ok" if status == "ok" else
                        ("no_route" if status == "no_route" else "other")] += 1
+                # Circuit breaker. A run that has lost its network looks exactly
+                # like a slow run from the outside - every pair still produces a
+                # cache line - so without this the process will happily spend
+                # twelve hours writing nulls, which is what it did on
+                # 2026-10-23. Sixty consecutive failures across all workers is
+                # far outside anything a healthy endpoint produces.
+                if status == "ok":
+                    streak["fails"] = 0
+                else:
+                    streak["fails"] += 1
+                    if streak["fails"] >= 60:
+                        print(f"\n[abort] {streak['fails']} consecutive failures, "
+                              f"last status: {status}")
+                        print("[abort] the network path is gone, not slow - "
+                              "stopping instead of caching more nulls")
+                        os._exit(3)
                 total = sum(counts.values())
                 if total % 500 == 0 or total == len(todo):
                     elapsed = time.monotonic() - started
