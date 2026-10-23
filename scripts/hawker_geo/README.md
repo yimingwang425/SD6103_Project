@@ -256,36 +256,40 @@ walk_distance = network_distance + snap(起点) + snap(终点)
 
 直线 206 m、两家店在同一条路上，OSRM 却绕了 1 km——这几乎肯定是 OSRM 把起点吸附到了**道路另一侧**（快速路/水渠对面），而 OneMap 走了正确的人行连廊。全量数据里绕行系数 > 3× 的有 **699 对（1.1%）**，其中 **424 个 block 的「最近 hawker」落在这批可疑对里**。
 
-**影响有多大：把能影响分类的部分全部重算完了**
+**影响有多大：已经从抽样补全走到全量重算**
 
-最初只重算了 424 个可疑 block 涉及的 10,249 对，但那是**按「距边界 ±25%」选的**，等于专挑边界、冷落近端——后来一查覆盖度，最要紧的 class 1（<500 m）反而只有 43.1%。所以补全到 **27,208 对**：
+最初只重算了 424 个可疑 block 涉及的 10,249 对，但那是**按「距边界 ±25%」选的**，等于专挑边界、冷落近端——后来一查覆盖度，最要紧的 class 1（<500 m）反而只有 43.1%。于是先补到 27,208 对（class 1/2 与 ≤1500 m 全覆盖），最终把**全部 63,340 对**都跑完了：
 
 | 覆盖范围 | 对数 | 覆盖率 |
 |---|---|---|
 | class 1（<500 m） | 2,289 | **100%** |
 | class 2（500–1000 m） | 6,569 | **100%** |
 | ≤1500 m 全部 | 18,889 | **100%** |
-| class 3（>1000 m） | 18,349 / 54,482 | 33.7% |
-| 合计 | 27,208 / 63,340 | 43.0% |
+| class 3（>1000 m） | 54,482 / 54,482 | **100%** |
+| 合计 | 63,340 / 63,340 | **100%** |
 
-为什么停在 1500 m：class 1/2 的边界是 500 / 1000 m，**每一个可能属于 class 1 或 2 的对都已在表内**；而 1000–1500 m 这一带之所以也要，是因为 OneMap 中位比 OSRM 短 5%，一个 1,300 m 的对有可能落到 1000 m 以内翻进 class 2。再往外的对要翻类需要 >33% 的缩短，已属尾部（实测比值 p1 = 0.41），留作已知残余风险。
-
-| 指标 | 值 |
-|---|---|
-| 重算对数 | 27,208，成功 27,207，0 条无路线 |
-| OneMap vs OSRM（门到门） | 中位 **−5.0%**，p10 −27.0%，p90 +9.3% |
-| 差异 > 25% 的对 | **3,831（14.1%）** |
-| OneMap 更短 / 更长 | 19,102 / 8,040 |
-
-**block 级影响（只统计最近中心 ≤1500 m 的 9,166 个 block——这些 block 的最近中心是精确值，不是估计）**
+中途停在 1500 m 的理由曾经是：class 1/2 的边界是 500 / 1000 m，**每一个可能属于 class 1 或 2 的对都已在表内**；1000–1500 m 这一带之所以也要，是因为 OneMap 中位比 OSRM 短 5%，一个 1,300 m 的对有可能落到 1000 m 以内翻进 class 2；再往外的对要翻类需要 >33% 的缩短，已属尾部（实测比值 p1 = 0.41）。全量跑完之后，这个残余风险不再需要作为假设保留——**63,340 对全部有 OneMap 实测值，审计覆盖 100%**。
 
 | 指标 | 值 |
 |---|---|
-| 改用 OneMap 后跨类的 block | **2,123 / 9,166（23.2%）** |
-| 类别分布 | 2,007 / 3,907 / 3,252 → **2,715 / 4,093 / 2,358** |
-| 变近 / 变远 | 1,835 / 288 |
+| 重算对数 | **63,340 / 63,340**，全部成功，0 条无路线 |
+| OneMap vs OSRM（门到门） | 中位 **−4.6%**，p10 −20.2%，p90 +5.8% |
+| 差异 > 25% 的对 | **5,024（7.9%）** |
+| OneMap 更短 / 更长 / 相等 | 46,570 / 16,698 / 72 |
 
-这一版比早期那 10,249 对的口径更硬：那时说「15.3% 跨类」的分母是全部 12,442 个 block，其中 3,276 个是够不着边界的 class 3、本来就不可能动；现在分母换成 9,166 个**真正可能翻类**的 block，23.2% 才是诚实的数字。方向也不含糊——**1,835 变近、288 变远**，OneMap 把 class 1 的 block 从 2,007 拉到 2,715（+35%）。
+（口径说明：早期基于 27,208 对子集的数字是中位 −5.0%、>25% 占 14.1%——那个子集专挑边界附近，样本偏斜；上表为全量 63,340 对口径，引用时用这一版。）
+
+**block 级影响（全部 12,442 个 block——全量覆盖后每个 block 的 OneMap 最近中心都是实测值，不再是估计）**
+
+| 指标 | 值 |
+|---|---|
+| 改用 OneMap 后跨类的 block | **2,186 / 12,442（17.6%）** |
+| 类别分布（class 1 / 2 / 3） | 2,007 / 3,907 / 6,528 → **2,728 / 4,143 / 5,571** |
+| 变近 / 变远 | 9,033 / 3,346（63 个不变） |
+
+全量口径下方向依然不含糊：**9,033 个 block 变近、3,346 个变远**，跨类的 2,186 个里 1,898 个是变近；OneMap 把 class 1 的 block 从 2,007 拉到 2,728（**+35.9%**）。只看会进入 resale 交易的 10,181 个住宅 block：跨类 1,850（18.2%），类别分布 1,509 / 3,243 / 5,429 → 2,105 / 3,467 / 4,609。
+
+（历史口径备注：本节早期版本只覆盖 27,208 对，分母是「最近中心 ≤1500 m」的 9,166 个 block，报 23.2% 跨类——那个分母剔除了 3,276 个够不着边界的 class 3 block。现在全量覆盖，分母就是全部 12,442 个 block，率降到 17.6% 纯粹是因为分母变大了，受影响 block 的绝对数只增不减。）
 
 **这个偏移必须在报告里说清楚**：Q5 比较的是「class 1 vs class 3」的中位价，而 class 1 的数量对引擎敏感。我们的处理是**主结论只用 OSRM、并把 OneMap 的结果作为敏感性检验**，而不是挑一个好看的报。
 
@@ -295,11 +299,11 @@ walk_distance = network_distance + snap(起点) + snap(终点)
 
 但差异不隐藏：
 
-- `data/hawker_geo/onemap_distances.csv` —— 27,208 对的逐对对比（`osrm_m` / `onemap_m` / `status`），可以直接拿去画误差分布；
+- `data/hawker_geo/onemap_distances.csv` —— 63,340 对的逐对对比（`osrm_m` / `onemap_raw_m` / `onemap_m` / `status`），可以直接拿去画误差分布；
 - `data/hawker_geo/onemap_full.jsonl` —— 原始缓存，有了它 `07 --merge-only` 几秒就能重建合并表，不用再发一次请求；
 - 想整表切到 OneMap 只需一行：`03_derive_proximity.py --walk data/hawker_geo/hdb_hawker_walk_onemap.csv`。
 
-**这个重算反而加强了 §5.3 的论点**：用 OneMap 距离时，直线近似的最优误分类率是 **9.0%**（阈值 303 / 691 m，基于早期 10,249 对子集），用 OSRM 是 **15.4%**（268 / 645 m）。两个数都远高于"可以忽略"，所以"必须走真实路网"这个结论**不依赖于选哪个引擎**——这是比单一引擎自证更有力的证据。
+**这个重算反而加强了 §5.3 的论点**：用 OneMap 距离时，直线近似的最优误分类率是 **9.0%**（阈值 309 / 698 m，全量 63,340 对口径），用 OSRM 是 **15.4%**（268 / 645 m）。两个数都远高于"可以忽略"，所以"必须走真实路网"这个结论**不依赖于选哪个引擎**——这是比单一引擎自证更有力的证据。
 
 
 ### 5.5 一个意外的发现（可以直接写进 Q4/Q5 的 insight）
@@ -409,7 +413,7 @@ scripts/hawker_geo/
 ├── 04_schema_hawker.sql          建表 DDL（含 CHECK 约束）
 ├── 05_validate_osrm.py           用 Valhalla 交叉验证距离
 ├── 06_validate_onemap.py         用 OneMap（SLA 官方路网）交叉验证距离
-├── 07_reroute_onemap.py          用 OneMap 重算边界附近的可疑距离（可断点续跑）
+├── 07_reroute_onemap.py          用 OneMap 全量重算 63,340 对（可断点续跑，--merge-only 秒级重建）
 ├── 08_join_resale.py             resale 交易 → block_id 连接（Q4/Q5 的前提）
 ├── 09_queries_hawker.sql         Q4 / Q5 正式查询（含敏感性分析 + 覆盖率诊断）
 └── _verify_queries.py            不连数据库时用 Python 复算 Q4/Q5，核对 SQL 注释里的数字
@@ -436,10 +440,12 @@ data/hawker_geo/                  （本工作流产出）
 ├── method_comparison.csv           直线/曼哈顿/步行 三种算法的分类差异
 ├── router_validation.csv           OSRM vs Valhalla 的 30 对复核
 ├── onemap_validation.csv           OSRM vs OneMap 的 299 对复核
+├── onemap_distances.csv            全量 63,340 对的 OSRM vs OneMap 逐对对比（审计主产物）
+├── onemap_full.jsonl               OneMap 原始缓存（提交进仓库，断点续跑靠它）
 └── osrm_cache.jsonl                路由缓存（提交进仓库，省掉 37 分钟重跑）
 ```
 
-`hdb_hawker_walk.csv` 和 `resale_transaction.csv` 没进仓库，见根目录 `.gitignore`：两者都能从已提交的缓存 / `RESALE_CLEANED.csv` 在几秒到一分钟内重算。
+`hdb_hawker_walk.csv`、`hdb_hawker_walk_onemap.csv` 和 `resale_transaction.csv` 没进仓库，见根目录 `.gitignore`：三者都能从已提交的缓存在几秒到一分钟内重算（OneMap 替代表用 `07_reroute_onemap.py --merge-only` 重建）。
 
 ## 7. 复现方式
 
@@ -451,6 +457,7 @@ python scripts/hawker_geo/03_derive_proximity.py
 python scripts/hawker_geo/05_validate_osrm.py           # 可选：Valhalla 复核，约 1 分钟
 export ONEMAP_TOKEN='...'                               # OneMap token（72 小时过期）
 python scripts/hawker_geo/06_validate_onemap.py         # 可选：OneMap 复核，300 对约 2 分钟
+python scripts/hawker_geo/07_reroute_onemap.py --merge-only   # 从 onemap_full.jsonl 重建全量对比表，几秒
 python scripts/hawker_geo/08_join_resale.py             # resale → block_id，约 1 分钟
 psql -f scripts/hawker_geo/04_schema_hawker.sql         # 建表 + \copy 装载 + 行数校验
 psql -f scripts/hawker_geo/09_queries_hawker.sql        # Q4 / Q5，注释里带已核实的结果
