@@ -23,22 +23,32 @@ OneMap has no matrix endpoint, so this is one HTTP request per pair: 63,340
 requests. The run is resumable at any point - every completed pair is appended
 to data/hawker_geo/onemap_full.jsonl, and a re-run skips whatever is there.
 
-Throughput was measured against the live endpoint on 2026-10-22, and the
-earlier "10-20 req/s" guess in this docstring was simply wrong:
+Throughput was measured against the live endpoint on 2026-10-22 and again over
+a full day of running on 2026-10-23, and both of the earlier guesses in this
+docstring ("10-20 req/s" and then "2.3 req/s sustained") were too optimistic:
 
     burst, 60 requests   22-35 successful req/s  (the rest are 429)
-    sustained            2.2-2.4 successful req/s
+    one 700-pair slice    1.1-4.0 successful req/s, median ~1.4
+    sustained             ~1.4 successful req/s
 
-The server throttles on *request rate*, not on concurrency, so raising the
-worker count does not help - 14 workers measured 2.2 req/s with three times
-the 429s of 6 workers. The sustainable ceiling for one token is therefore
-about 2.3 req/s, i.e. roughly 6-7 hours for the full relation, not 1.5-2.5.
-Budget a night, not an afternoon.
+The burst allowance replenishes unevenly, which is why a single 90-second
+sample reads 2.3 and a whole run settles near 1.4. The server throttles on
+*request rate*, not on concurrency, so raising the worker count does not help -
+14 workers measured 2.2 req/s with three times the 429s of 6 workers. Budget
+about 8 hours for the full 63,340-pair relation, not the 1.5-2.5 this file
+originally claimed.
+
+That is why --max-walk-m exists. Re-routing everything buys very little: the
+class boundaries are at 500 m and 1000 m, so once every pair within 1500 m is
+done, no remaining pair can be class 1 or 2, and pulling one of them under
+1000 m would need a >33% shortening - well into the tail of the observed
+OneMap/OSRM ratio. `--max-walk-m 1500` finishes the part that can move an
+answer in about 3.5 hours; the rest is 8.
 
 (What *was* fixable was this script's own pacing: the original limiter widened
 1.25x per 429 but recovered only 0.92x per 40 successes, and the 429 path slept
 3+2*attempt seconds per worker. Together those held the run at 1.1 req/s
-against a server willing to serve 2.3 - see RateLimiter for the measured
+against a server willing to serve more - see RateLimiter for the measured
 before/after.)
 
 Definition caveat
@@ -221,11 +231,24 @@ def main() -> int:
                         help="skip fetching, rebuild the CSVs from the cache")
     parser.add_argument("--limit", type=int, default=0,
                         help="stop after N new pairs (0 = all)")
+    parser.add_argument("--max-seconds", type=float, default=0.0,
+                        help="stop after this many seconds (0 = no limit). "
+                             "Useful for driving the run in bounded slices: "
+                             "throughput swings between 1.1 and 4.0 req/s "
+                             "depending on how much burst allowance the "
+                             "endpoint has left, so a fixed pair count either "
+                             "overruns the window or wastes most of it")
     parser.add_argument("--select", choices=("all", "risk"), default="risk",
                         help="'all' re-routes every pair (63k requests, ~7-8 h "
                              "at the measured 2.3 req/s sustained); 'risk' "
                              "re-routes only the pairs that can change a "
                              "proximity class")
+    parser.add_argument("--max-walk-m", type=float, default=0.0,
+                        help="only re-route pairs whose OSRM walk is at most "
+                             "this many metres (0 = no limit). Use 1000 to "
+                             "finish every pair that can be class 1 or 2: the "
+                             "remaining class-3 pairs are far by construction "
+                             "and cannot move any query answer")
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
@@ -289,6 +312,16 @@ def main() -> int:
               f"{len(targets)} pairs to re-route "
               f"(of {len(pairs)})")
 
+    # Note this narrows what gets *fetched*, never what gets written out: the
+    # merge below still walks the full `pairs` list, so a partial run leaves the
+    # output CSVs incomplete rather than truncated to the filtered subset.
+    if args.max_walk_m:
+        before = len(targets)
+        targets = [p for p in targets
+                   if float(p["walk_distance_m"]) <= args.max_walk_m]
+        print(f"[filter] {len(targets)} of {before} pairs within "
+              f"{args.max_walk_m:.0f} m walk")
+
     cache_path = Path(args.cache)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
     # Only a usable distance counts as "done". A failed request must stay in the
@@ -338,10 +371,17 @@ def main() -> int:
                               max_interval=args.max_interval)
         lock = threading.Lock()
         started = time.monotonic()
+        deadline = started + args.max_seconds if args.max_seconds else None
         counts = {"ok": 0, "no_route": 0, "other": 0}
         streak = {"fails": 0}
 
         def work(row: dict) -> None:
+            # Past the time budget, return without fetching. pool.map still walks
+            # the remaining rows, but each is a no-op, so the slice ends close to
+            # its deadline instead of mid-request. Nothing is lost: those pairs
+            # simply stay in the todo list for the next slice.
+            if deadline is not None and time.monotonic() > deadline:
+                return
             block_id, hawker_id = row["block_id"], row["hawker_id"]
             if block_id not in block_coords or hawker_id not in hawker_coords:
                 return
