@@ -20,10 +20,36 @@ definition, one story.
 Cost
 ----
 OneMap has no matrix endpoint, so this is one HTTP request per pair: 63,340
-requests. Measured throughput on the public endpoint is ~10-20 req/s with a
-small amount of 429 backpressure, so the full run is roughly 1.5-2.5 hours. The
-run is resumable at any point - every completed pair is appended to
-data/onemap_full.jsonl, and a re-run skips whatever is already there.
+requests. The run is resumable at any point - every completed pair is appended
+to data/hawker_geo/onemap_full.jsonl, and a re-run skips whatever is there.
+
+Throughput was measured against the live endpoint on 2026-10-22 and again over
+a full day of running on 2026-10-23, and both of the earlier guesses in this
+docstring ("10-20 req/s" and then "2.3 req/s sustained") were too optimistic:
+
+    burst, 60 requests   22-35 successful req/s  (the rest are 429)
+    one 700-pair slice    1.1-4.0 successful req/s, median ~1.4
+    sustained             ~1.4 successful req/s
+
+The burst allowance replenishes unevenly, which is why a single 90-second
+sample reads 2.3 and a whole run settles near 1.4. The server throttles on
+*request rate*, not on concurrency, so raising the worker count does not help -
+14 workers measured 2.2 req/s with three times the 429s of 6 workers. Budget
+about 8 hours for the full 63,340-pair relation, not the 1.5-2.5 this file
+originally claimed.
+
+That is why --max-walk-m exists. Re-routing everything buys very little: the
+class boundaries are at 500 m and 1000 m, so once every pair within 1500 m is
+done, no remaining pair can be class 1 or 2, and pulling one of them under
+1000 m would need a >33% shortening - well into the tail of the observed
+OneMap/OSRM ratio. `--max-walk-m 1500` finishes the part that can move an
+answer in about 3.5 hours; the rest is 8.
+
+(What *was* fixable was this script's own pacing: the original limiter widened
+1.25x per 429 but recovered only 0.92x per 40 successes, and the 429 path slept
+3+2*attempt seconds per worker. Together those held the run at 1.1 req/s
+against a server willing to serve more - see RateLimiter for the measured
+before/after.)
 
 Definition caveat
 -----------------
@@ -68,11 +94,26 @@ USER_AGENT = "ntu-datasys-project/1.0 (student coursework)"
 
 
 class RateLimiter:
-    """Adaptive global pacer: widens the interval on 429, narrows it on success."""
+    """Adaptive global pacer: widens the interval on 429, narrows it on success.
 
-    def __init__(self, interval: float = 0.10,
-                 min_interval: float = 0.05,
-                 max_interval: float = 2.0) -> None:
+    The tuning here is not arbitrary - it was measured against the live endpoint
+    (2026-10-22). OneMap answers a 60-request burst at 22-35 successful req/s
+    and simply returns 429 for the rest, so the service is nowhere near the
+    bottleneck. What *was* the bottleneck is this class as originally written:
+    it widened by 1.25x on every 429 but only narrowed by 0.92x per 40
+    successes, so any early burst of 429s pushed the interval to the 2.0 s cap
+    and it then needed ~680 successes to walk back down - during which the whole
+    run crawled at ~1.1 req/s instead of the 4-5 req/s the server allows.
+
+    So: a gentler multiplicative increase (1.15x), a much faster recovery
+    (0.97x every 10 successes) and a lower cap (1.0 s, i.e. never slower than
+    1 req/s). The published quota is 250 calls/min = 4.2 req/s, which is what
+    the run should settle at.
+    """
+
+    def __init__(self, interval: float = 0.20,
+                 min_interval: float = 0.10,
+                 max_interval: float = 1.0) -> None:
         self.interval = interval
         self.min_interval = min_interval
         self.max_interval = max_interval
@@ -95,15 +136,17 @@ class RateLimiter:
     def note_success(self) -> None:
         with self.lock:
             self.successes += 1
-            # Recover the interval gradually: a single 429 should cost a few
-            # seconds, not permanently halve the throughput of a 2-hour run.
-            if self.successes % 40 == 0 and self.interval > self.min_interval:
-                self.interval = max(self.min_interval, self.interval * 0.92)
+            # Recover quickly: 10 successes buy back 3% of the interval, so the
+            # pacer walks down from the cap to the floor in ~200 requests
+            # instead of ~680. A brief 429 burst should cost seconds, not the
+            # throughput of the whole run.
+            if self.successes % 10 == 0 and self.interval > self.min_interval:
+                self.interval = max(self.min_interval, self.interval * 0.97)
 
     def note_throttle(self) -> None:
         with self.lock:
             self.throttled += 1
-            self.interval = min(self.max_interval, self.interval * 1.25)
+            self.interval = min(self.max_interval, self.interval * 1.15)
 
 
 def fetch_one(token: str,
@@ -140,13 +183,30 @@ def fetch_one(token: str,
                 return None, "unauthorised"
             if exc.code == 429:
                 limiter.note_throttle()
-                time.sleep(3 + attempt * 2)
+                # The old pause was 3 + 2*attempt seconds (3,5,7,9,11). That was
+                # the single biggest throughput killer: with only a handful of
+                # workers, a few 429s parked every thread for seconds at a time
+                # and the run measured 1.1 req/s against a server that happily
+                # serves 5+. Honour Retry-After when it is sent, otherwise back
+                # off briefly - the global pacer is already widening every
+                # worker's slot, so this does not need to be generous as well.
+                retry_after = exc.headers.get("Retry-After")
+                try:
+                    pause = float(retry_after) if retry_after else 0.4 * (2 ** attempt)
+                except (TypeError, ValueError):
+                    pause = 0.4 * (2 ** attempt)
+                time.sleep(min(pause, 4.0))
                 status = "throttled"
                 continue
             status = f"error:{exc.code}"
             time.sleep(1 + attempt)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            status = f"error:{type(exc).__name__}"
+            # Keep the reason. "error:URLError" alone is undiagnosable: it covers
+            # DNS failure, connection reset, TLS problems, permission denied and
+            # timeouts alike, and on 2026-10-23 the cache filled with 14,450 of
+            # them without ever saying which one it was.
+            reason = getattr(exc, "reason", exc)
+            status = f"error:{type(exc).__name__}:{str(reason)[:80]}"
             time.sleep(1 + attempt)
     return None, status
 
@@ -160,17 +220,35 @@ def main() -> int:
     parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
     parser.add_argument("--cache", default=str(here / "data" / "hawker_geo" / "onemap_full.jsonl"))
     parser.add_argument("--token-env", default="ONEMAP_TOKEN")
-    parser.add_argument("--workers", type=int, default=4)
-    parser.add_argument("--interval", type=float, default=0.10,
-                        help="initial seconds between requests (global)")
+    parser.add_argument("--workers", type=int, default=6)
+    parser.add_argument("--interval", type=float, default=0.20,
+                        help="initial seconds between requests, globally "
+                             "(0.20 = 5 req/s, near the published 250 calls/min)")
+    parser.add_argument("--max-interval", type=float, default=1.0,
+                        help="slowest the pacer may become; 1.0 = a 1 req/s "
+                             "floor, so a 429 burst can never collapse the run")
     parser.add_argument("--merge-only", action="store_true",
                         help="skip fetching, rebuild the CSVs from the cache")
     parser.add_argument("--limit", type=int, default=0,
                         help="stop after N new pairs (0 = all)")
+    parser.add_argument("--max-seconds", type=float, default=0.0,
+                        help="stop after this many seconds (0 = no limit). "
+                             "Useful for driving the run in bounded slices: "
+                             "throughput swings between 1.1 and 4.0 req/s "
+                             "depending on how much burst allowance the "
+                             "endpoint has left, so a fixed pair count either "
+                             "overruns the window or wastes most of it")
     parser.add_argument("--select", choices=("all", "risk"), default="risk",
-                        help="'all' re-routes every pair (63k requests, ~12 h at "
-                             "the observed 1.3 req/s); 'risk' re-routes only the "
-                             "pairs that can change a proximity class")
+                        help="'all' re-routes every pair (63k requests, ~7-8 h "
+                             "at the measured 2.3 req/s sustained); 'risk' "
+                             "re-routes only the pairs that can change a "
+                             "proximity class")
+    parser.add_argument("--max-walk-m", type=float, default=0.0,
+                        help="only re-route pairs whose OSRM walk is at most "
+                             "this many metres (0 = no limit). Use 1000 to "
+                             "finish every pair that can be class 1 or 2: the "
+                             "remaining class-3 pairs are far by construction "
+                             "and cannot move any query answer")
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
@@ -234,9 +312,30 @@ def main() -> int:
               f"{len(targets)} pairs to re-route "
               f"(of {len(pairs)})")
 
+    # Note this narrows what gets *fetched*, never what gets written out: the
+    # merge below still walks the full `pairs` list, so a partial run leaves the
+    # output CSVs incomplete rather than truncated to the filtered subset.
+    if args.max_walk_m:
+        before = len(targets)
+        targets = [p for p in targets
+                   if float(p["walk_distance_m"]) <= args.max_walk_m]
+        print(f"[filter] {len(targets)} of {before} pairs within "
+              f"{args.max_walk_m:.0f} m walk")
+
     cache_path = Path(args.cache)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
+    # Only a usable distance counts as "done". A failed request must stay in the
+    # todo list, otherwise the cache quietly turns a transient network outage
+    # into permanent missing data: the pair is written once with a null
+    # distance, is then treated as already fetched on every later run, and is
+    # never retried. That is exactly what happened on 2026-10-23 - 14,450
+    # consecutive URLErrors were cached as if they were results.
+    #
+    # "no_route" is different: OneMap answered, and the answer is that no
+    # walking route exists, so re-asking cannot help.
+    TERMINAL = {"ok", "no_route"}
     done: dict[tuple[str, str], dict] = {}
+    skipped = 0
     if cache_path.exists():
         with cache_path.open(encoding="utf-8") as handle:
             for line in handle:
@@ -247,8 +346,15 @@ def main() -> int:
                     record = json.loads(line)
                 except json.JSONDecodeError:
                     continue
+                if record.get("status") not in TERMINAL:
+                    skipped += 1
+                    continue
+                if record.get("status") == "ok" and record.get("onemap_raw_m") is None:
+                    skipped += 1
+                    continue
                 done[(record["block_id"], record["hawker_id"])] = record
-        print(f"[cache] {len(done)} pairs already fetched")
+        print(f"[cache] {len(done)} pairs already fetched"
+              + (f", {skipped} failed records ignored (will retry)" if skipped else ""))
 
     if not args.merge_only:
         token = os.environ.get(args.token_env, "").strip()
@@ -261,12 +367,21 @@ def main() -> int:
             todo = todo[:args.limit]
         print(f"[fetch] {len(todo)} to go with {args.workers} workers")
 
-        limiter = RateLimiter(interval=args.interval)
+        limiter = RateLimiter(interval=args.interval,
+                              max_interval=args.max_interval)
         lock = threading.Lock()
         started = time.monotonic()
+        deadline = started + args.max_seconds if args.max_seconds else None
         counts = {"ok": 0, "no_route": 0, "other": 0}
+        streak = {"fails": 0}
 
         def work(row: dict) -> None:
+            # Past the time budget, return without fetching. pool.map still walks
+            # the remaining rows, but each is a no-op, so the slice ends close to
+            # its deadline instead of mid-request. Nothing is lost: those pairs
+            # simply stay in the todo list for the next slice.
+            if deadline is not None and time.monotonic() > deadline:
+                return
             block_id, hawker_id = row["block_id"], row["hawker_id"]
             if block_id not in block_coords or hawker_id not in hawker_coords:
                 return
@@ -281,6 +396,22 @@ def main() -> int:
                 done[(block_id, hawker_id)] = record
                 counts["ok" if status == "ok" else
                        ("no_route" if status == "no_route" else "other")] += 1
+                # Circuit breaker. A run that has lost its network looks exactly
+                # like a slow run from the outside - every pair still produces a
+                # cache line - so without this the process will happily spend
+                # twelve hours writing nulls, which is what it did on
+                # 2026-10-23. Sixty consecutive failures across all workers is
+                # far outside anything a healthy endpoint produces.
+                if status == "ok":
+                    streak["fails"] = 0
+                else:
+                    streak["fails"] += 1
+                    if streak["fails"] >= 60:
+                        print(f"\n[abort] {streak['fails']} consecutive failures, "
+                              f"last status: {status}")
+                        print("[abort] the network path is gone, not slow - "
+                              "stopping instead of caching more nulls")
+                        os._exit(3)
                 total = sum(counts.values())
                 if total % 500 == 0 or total == len(todo):
                     elapsed = time.monotonic() - started
