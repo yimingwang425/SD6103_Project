@@ -34,11 +34,23 @@ Data Systems Project · AY26S1 · 负责范围：hawker centre 地理数据 + HD
 python scripts/hawker_geo/01_clean_hawker_geo.py        # 有缓存，几秒
 python scripts/hawker_geo/02_compute_walk_distance.py   # 有缓存几秒；无缓存 220 次请求约 37 分钟
 python scripts/hawker_geo/03_derive_proximity.py        # 表数据全产出（含 resale 连接，约 1 分钟）
+
+# 建表后装载：CSV 的列与表完全一致、顺序相同，直接 copy，不需要暂存表
 psql -U postgres -d sd6103_project -f scripts/hawker_geo/schema_hawker.sql
+psql -U postgres -d sd6103_project <<'SQL'
+\copy hdb_block          FROM 'data/hawker_geo/hdb_block.csv'           WITH (FORMAT csv, HEADER true)
+\copy hawker_centre      FROM 'data/hawker_geo/hawker_centre.csv'       WITH (FORMAT csv, HEADER true)
+\copy hawker_proximity   FROM 'data/hawker_geo/hdb_hawker_proximity.csv' WITH (FORMAT csv, HEADER true)
+\copy resale_transaction FROM 'data/hawker_geo/resale_transaction.csv'  WITH (FORMAT csv, HEADER true)
+SQL
+
+# 行数应为 12,442 / 129 / 63,340 / 986,720
+for t in hdb_block hawker_centre hawker_proximity resale_transaction; do
+  psql -U postgres -d sd6103_project -tAc "SELECT COUNT(*) FROM $t"
+done
+
 psql -U postgres -d sd6103_project -f scripts/hawker_geo/queries_hawker.sql
 ```
-
-装载后 `schema_hawker.sql` 末尾会打印四张表行数，应为 12,442 / 129 / 63,340 / 986,720。CSV 的列与表完全一致、顺序相同，所以直接 `\copy`，不需要暂存表。
 
 ## 数据
 

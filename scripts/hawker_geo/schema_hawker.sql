@@ -1,12 +1,10 @@
--- schema_hawker.sql - the four hawker-geo tables plus the two views the Q4/Q5
--- queries need. Load order: hdb_block -> hawker_centre -> hawker_proximity
--- -> resale_transaction, each referencing the previous one.
---
--- Run from the repository root (the \copy paths are relative to it):
---   psql -U postgres -d sd6103_project -f scripts/hawker_geo/schema_hawker.sql
+-- schema_hawker.sql - the four hawker-geo tables plus the two views Q4/Q5 need.
+-- Load order: hdb_block -> hawker_centre -> hawker_proximity -> resale_transaction,
+-- each referencing the previous one. Run from the repository root, then load the
+-- CSVs afterwards (see README) - their columns match the tables exactly.
 
--- one row per HDB block; postal_code is not unique in the source, so block_id
--- is a surrogate key. town holds the HDB code (AMK, CT, ...).
+-- one row per HDB block; block_id is a surrogate key, postal_code is not unique.
+-- town holds the HDB code (AMK, CT, ...).
 CREATE TABLE hdb_block (
     block_id    CHAR(6)      PRIMARY KEY,
     blk_no      VARCHAR(10)  NOT NULL,
@@ -18,21 +16,19 @@ CREATE TABLE hdb_block (
     UNIQUE (blk_no, street)
 );
 
--- 129 hawker centres: the geo file is authoritative for locations, the official
--- register for stall counts. The 22 centres opened after the register's
--- snapshot have NULL stall counts - unknown, not "no market".
+-- 129 hawker centres; stall counts come from the official register and stay NULL
+-- for the 22 centres opened after its snapshot - unknown, not "no market".
 CREATE TABLE hawker_centre (
     hawker_id                CHAR(4)       PRIMARY KEY,
     name                     VARCHAR(120)  NOT NULL UNIQUE,
     alias                    VARCHAR(120),
     address                  VARCHAR(200),
     postal_code              CHAR(6),
-    latitude                 NUMERIC(9,6) NOT NULL,
+    latitude                 NUMERIC(9,6)  NOT NULL,
     longitude                NUMERIC(9,6)  NOT NULL,
     no_of_stalls             SMALLINT,
     no_of_cooked_food_stalls SMALLINT,
     no_of_mkt_produce_stalls SMALLINT,
-    -- stall counts exist only when the centre was matched to the register
     CONSTRAINT hawker_stalls_all_or_nothing CHECK (
         (no_of_stalls IS NULL AND no_of_cooked_food_stalls IS NULL
                               AND no_of_mkt_produce_stalls IS NULL)
@@ -40,7 +36,7 @@ CREATE TABLE hawker_centre (
                                       AND no_of_mkt_produce_stalls IS NOT NULL))
 );
 
--- the M:N relation: walking path length (OSRM foot routing), not great-circle
+-- the M:N relation: walking path length (OSRM foot routing), not straight-line
 -- distance. class 1: <= 500 m, class 2: <= 1000 m, class 3: > 1000 m.
 CREATE TABLE hawker_proximity (
     block_id        CHAR(6)      NOT NULL REFERENCES hdb_block(block_id),
@@ -49,19 +45,17 @@ CREATE TABLE hawker_proximity (
     walk_duration_s NUMERIC(7,1)          CHECK (walk_duration_s >= 0),
     proximity_class SMALLINT     NOT NULL CHECK (proximity_class BETWEEN 1 AND 3),
     PRIMARY KEY (block_id, hawker_id),
-    -- the class definition is part of the schema, so the table cannot drift
-    -- away from the definition used in the report
+    -- the class definition lives in the schema, so the table cannot drift away
+    -- from the definition used in the report
     CONSTRAINT proximity_class_matches_distance CHECK (
         (proximity_class = 1 AND walk_distance_m <= 500)
         OR (proximity_class = 2 AND walk_distance_m > 500 AND walk_distance_m <= 1000)
         OR (proximity_class = 3 AND walk_distance_m > 1000))
 );
 
--- the fact table Q4/Q5 aggregate over. block_id is NULLABLE on purpose: 12,938
--- of 986,720 transactions happened on blocks demolished before the current HDB
--- register snapshot, so no geocode - and no proximity class - can exist for
--- them. Keeping them with a NULL FK keeps counts truthful; an INNER JOIN
--- excludes them from Q4/Q5 automatically.
+-- the fact table Q4/Q5 aggregate over. block_id is nullable on purpose: 12,938
+-- of the 986,720 transactions happened on blocks demolished before the current
+-- HDB register snapshot, so no proximity class can exist for them.
 CREATE TABLE resale_transaction (
     resale_id             CHAR(8)       PRIMARY KEY,
     block_id              CHAR(6)       REFERENCES hdb_block(block_id),
@@ -117,15 +111,3 @@ VALUES ('AMK', 'ANG MO KIO'),      ('BB', 'BUKIT BATOK'),
        ('SGN', 'SERANGOON'),       ('SK', 'SENGKANG'),
        ('TAP', 'TAMPINES'),        ('TP', 'TOA PAYOH'),
        ('WL', 'WOODLANDS'),        ('YS', 'YISHUN');
-
--- the CSVs are exported with exactly these columns, in this order
-\copy hdb_block           FROM 'data/hawker_geo/hdb_block.csv'           WITH (FORMAT csv, HEADER true, NULL '')
-\copy hawker_centre       FROM 'data/hawker_geo/hawker_centre.csv'       WITH (FORMAT csv, HEADER true, NULL '')
-\copy hawker_proximity    FROM 'data/hawker_geo/hdb_hawker_proximity.csv' WITH (FORMAT csv, HEADER true, NULL '')
-\copy resale_transaction  FROM 'data/hawker_geo/resale_transaction.csv'  WITH (FORMAT csv, HEADER true, NULL '')
-
--- verify: must be 12,442 / 129 / 63,340 / 986,720
-SELECT 'hdb_block' AS table_name, COUNT(*) AS rows FROM hdb_block
-UNION ALL SELECT 'hawker_centre', COUNT(*) FROM hawker_centre
-UNION ALL SELECT 'hawker_proximity', COUNT(*) FROM hawker_proximity
-UNION ALL SELECT 'resale_transaction', COUNT(*) FROM resale_transaction;
