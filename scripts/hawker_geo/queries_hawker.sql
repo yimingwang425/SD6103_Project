@@ -1,31 +1,14 @@
--- ===========================================================================
--- queries_hawker.sql - the two questions the hawker-geo workstream answers,
--- plus the two diagnostics that keep them honest.
---
--- Prerequisites: schema_hawker.sql has been loaded (hdb_block, hawker_centre,
--- hawker_proximity, resale_transaction, hdb_block_proximity_class, town_name).
---
+-- queries_hawker.sql - Q4 / Q5 plus the two diagnostics that keep them honest.
+-- Prerequisite: schema_hawker.sql has been loaded.
 -- Each query is independent and carries its verified result underneath, so a
 -- reviewer can tell whether their own run matches. The numbers were checked
 -- against the committed CSVs by an independent Python re-implementation
 -- (verify_queries.py) and against a live load of schema_hawker.sql - if your
 -- run disagrees, suspect the load, not the query.
--- ===========================================================================
 
-
--- ===========================================================================
 -- Q4. Does walking distance to a hawker centre associate with resale price,
---     once town and flat type are held fixed?
---
--- 4 ROOM and 2020-01 onward only (otherwise the "effect" is mostly flat size
--- and lease age); compared WITHIN town (towns differ in price level by 2x);
--- HAVING n >= 30 per class so a median means something.
---
--- Result is NOT monotone: in most towns class 2 is cheaper than class 1, but
--- class 3 often ticks back up - older, larger, better-connected estates where
--- "far from a hawker centre" is really "far from everything". Proximity is a
--- weak, non-monotone price signal and a proxy for estate maturity.
--- ===========================================================================
+-- once town and flat type are held fixed? 4 ROOM and 2020-01 onward only,
+-- compared WITHIN town, HAVING n >= 30 per class so a median means something.
 WITH priced AS (
     SELECT b.town          AS town_code,
            c.proximity_class,
@@ -56,7 +39,10 @@ HAVING COUNT(*) FILTER (WHERE pr.proximity_class = 1) >= 30
 -- class-1 median of exactly S$490,000
 ORDER  BY median_class1 DESC, n.town_name;
 
--- Verified result: 21 of 26 towns survive.
+-- Verified result: 21 of 26 towns survive. The result is NOT monotone - in
+-- most towns class 2 is cheaper than class 1, but class 3 often ticks back up:
+-- "far from a hawker centre" is really "far from everything", a proxy for
+-- estate maturity rather than a clean proximity effect.
 --
 --   town_name            median_class1  median_class2  median_class3     n1     n2     n3
 --   BUKIT MERAH                880,000        765,000        833,000    862  1,475    271
@@ -85,12 +71,9 @@ ORDER  BY median_class1 DESC, n.town_name;
 -- correct: those towns have an even number of transactions in that class, so
 -- PERCENTILE_CONT interpolates between the two middle prices.
 
-
--- ===========================================================================
 -- Q4 diagnostic. Which towns dropped out, and was it because the class is
--- structurally empty or merely too thin to summarise?
--- ("21 of 26" looks like data loss; it is not.)
--- ===========================================================================
+-- structurally empty or merely too thin to summarise? ("21 of 26" looks like
+-- data loss; it is not.)
 WITH priced AS (
     SELECT b.town AS town_code, c.proximity_class, t.resale_price
     FROM   resale_transaction t
@@ -125,15 +108,11 @@ ORDER  BY LEAST(c.n1, c.n2, c.n3), n.town_name;
 --   SERANGOON          0     0  1291   structural: class empty   (n1 = n2 = 0)
 --   CENTRAL AREA    440    80    10   thin: class too small     (n3 = 10)
 
-
--- ===========================================================================
 -- Q5. Does having a fresh market within a 1 km walk associate with price?
---
 -- "Has a fresh market" = no_of_mkt_produce_stalls > 0 from the official stall
 -- register, NOT the centre's name (only 20 of 107 named centres contain the
 -- word "market"). The 22 centres with NULL stall counts are excluded here
 -- (strict); the sensitivity variant below treats them as having one.
--- ===========================================================================
 WITH block_fresh AS (
     SELECT b.block_id,
            EXISTS (
@@ -163,15 +142,11 @@ ORDER  BY f.has_fresh_market_nearby DESC;
 --   false                   | 59,241 |      536,000 |    553,663
 --   -> median gap +14.7%, mean gap +20.3%
 
-
--- ===========================================================================
 -- Q5 sensitivity. Same query, but the 22 attribute-unknown centres are treated
--- as having a fresh market (the optimistic bound).
---
--- The gap collapses from +14.7% to +5.0%: two thirds of the measured premium
--- depends on an assumption about 22 centres we have no stall data for. Report
--- both numbers - do not quote +14.7% alone.
--- ===========================================================================
+-- as having a fresh market (the optimistic bound). The gap collapses from
+-- +14.7% to +5.0%: two thirds of the measured premium depends on an assumption
+-- about 22 centres we have no stall data for. Report both numbers - do not
+-- quote +14.7% alone.
 WITH block_fresh AS (
     SELECT b.block_id,
            EXISTS (
@@ -202,11 +177,8 @@ ORDER  BY f.has_fresh_market_nearby DESC;
 --   false                   | 42,331 |      535,000 |    550,471
 --   -> median gap +5.0%, mean gap +11.4%
 
-
--- ===========================================================================
 -- Coverage diagnostic. How much of the housing stock can this analysis even
 -- speak about? This number should accompany Q5 wherever it is quoted.
--- ===========================================================================
 WITH block_flags AS (
     SELECT b.block_id,
            EXISTS (

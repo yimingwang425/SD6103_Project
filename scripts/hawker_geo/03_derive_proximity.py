@@ -1,41 +1,31 @@
 #!/usr/bin/env python3
 """
-03_derive_proximity.py
-======================
-Turn the routed pairs from 02 into every CSV the schema (schema_hawker.sql)
-loads, and quantify how much the choice of distance metric actually matters.
+03_derive_proximity.py - turn the routed pairs from 02 into every CSV the
+schema (schema_hawker.sql) loads, and quantify how much the choice of
+distance metric actually matters.
 
-Outputs (all in data/hawker_geo/)
--------------------------------
-hdb_hawker_proximity.csv   the M:N relation with walking distance + class
-hdb_block_nearest.csv      one row per block: its nearest centre and that class
-method_comparison.csv      nearest centre by walking vs straight-line vs Manhattan
-resale_transaction.csv      resale transactions joined to block_id (--skip-resale
-                            to disable; needs the team's RESALE_CLEANED.csv)
-resale_unmatched.csv       distinct (block, street) that failed to match
-resale_join_report.txt     human-readable join report
+Outputs (all in data/hawker_geo/):
+  hdb_hawker_proximity.csv   the M:N relation with walking distance + class
+  hdb_block_nearest.csv      one row per block: its nearest centre and that class
+  method_comparison.csv      nearest centre by walking vs straight-line vs Manhattan
+  resale_transaction.csv     resale transactions joined to block_id
+  resale_unmatched.csv       distinct (block, street) that failed to match
+  resale_join_report.txt     human-readable join report
 
-Proximity definition (Task 1.1)
--------------------------------
-    class 1  walk <= 500 m       (~7 min at 4.5 km/h)
-    class 2  500 < walk <= 1000 m
-    class 3  walk > 1000 m
+Proximity definition (Task 1.1):
+  class 1  walk <= 500 m       (~7 min at 4.5 km/h)
+  class 2  500 < walk <= 1000 m
+  class 3  walk > 1000 m
 
 500 m is the standard walking-catchment radius for a neighbourhood amenity,
-1000 m the "10-minute walk" boundary - both defensible without appealing to the
-data. Change them with --class1/--class2; no re-routing needed.
-
-Usage
------
-    python 03_derive_proximity.py
-    python 03_derive_proximity.py --class1 400 --class2 800
-    python 03_derive_proximity.py --walk data/hawker_geo/hdb_hawker_walk_onemap.csv
-    python 03_derive_proximity.py --skip-resale
+1000 m the "10-minute walk" boundary - both defensible without appealing to
+the data. A block's own class (what Q4 uses) is the class of its nearest
+centre. To build the OneMap variant instead, point WALK_CSV at
+hdb_hawker_walk_onemap.csv (produced by 05_reroute_onemap.py).
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
 import math
 import os
@@ -45,14 +35,19 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parents[2]          # repo root
+OUTDIR = HERE / "data" / "hawker_geo"
+HDB_CSV = HERE / "data" / "raw_data" / "hdb.csv"
+HAWKER_CSV = HERE / "data" / "hawker_geo" / "hawker_centre.csv"
+BLOCKS_CSV = HERE / "data" / "hawker_geo" / "hdb_block.csv"
+WALK_CSV = HERE / "data" / "hawker_geo" / "hdb_hawker_walk.csv"
+RESALE_CSV = HERE / "data" / "src" / "resale" / "RESALE_CLEANED.csv"
+
+CLASS1_MAX = 500.0
+CLASS2_MAX = 1000.0
 CLASS_LABELS = {1: "very_near", 2: "near", 3: "far"}
 
-BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-
-# =========================================================================== #
-# Part 1: proximity classes
-# =========================================================================== #
 def manhattan_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     """Axis-aligned distance using a local equirectangular projection."""
     mean_lat = math.radians((lat1 + lat2) / 2)
@@ -61,17 +56,17 @@ def manhattan_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     return dx + dy
 
 
-def classify(distance_m: float, class1_max: float, class2_max: float) -> int:
-    if distance_m <= class1_max:
+def classify(distance_m: float) -> int:
+    if distance_m <= CLASS1_MAX:
         return 1
-    if distance_m <= class2_max:
+    if distance_m <= CLASS2_MAX:
         return 2
     return 3
 
 
-def derive_proximity(args, outdir: Path) -> None:
-    # ---------------- coordinates for the comparison metrics ---------------- #
-    with Path(args.hdb).open(encoding="utf-8-sig") as handle:
+def derive_proximity() -> None:
+    # coordinates for the comparison metrics
+    with HDB_CSV.open(encoding="utf-8-sig") as handle:
         hdb_rows = list(csv.DictReader(handle))
     coords = {}
     is_residential = {}
@@ -84,41 +79,38 @@ def derive_proximity(args, outdir: Path) -> None:
         # is not diluted by them.
         is_residential[block_id] = row["residential"].strip() == "Y"
 
-    with Path(args.hawker).open(encoding="utf-8-sig") as handle:
+    with HAWKER_CSV.open(encoding="utf-8-sig") as handle:
         hawker_rows = list(csv.DictReader(handle))
     hawker_coords = {
         row["hawker_id"]: (float(row["longitude"]), float(row["latitude"]))
         for row in hawker_rows
     }
     hawker_fresh = {
-        row["hawker_id"]: row["has_fresh_market"] == "true" for row in hawker_rows
+        row["hawker_id"]: row["no_of_mkt_produce_stalls"] not in ("", None)
+                          and int(row["no_of_mkt_produce_stalls"]) > 0
+        for row in hawker_rows
     }
 
-    # ---------------- load the routed pairs ---------------- #
-    with Path(args.walk).open(encoding="utf-8") as handle:
+    # load the routed pairs
+    with WALK_CSV.open(encoding="utf-8") as handle:
         pairs = list(csv.DictReader(handle))
     print(f"[load] {len(pairs)} routed block-hawker pairs")
 
-    # ---------------- classify and write the relation ---------------- #
-    relation_path = outdir / "hdb_hawker_proximity.csv"
-    class_counter: Counter[int] = Counter()
+    # classify and write the relation: exactly the hawker_proximity columns, in order
+    relation_path = OUTDIR / "hdb_hawker_proximity.csv"
     with relation_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow([
             "block_id", "hawker_id", "walk_distance_m", "walk_duration_s",
-            "proximity_class", "proximity_label", "hawker_has_fresh_market",
+            "proximity_class",
         ])
         for row in pairs:
-            walk = float(row["walk_distance_m"])
-            cls = classify(walk, args.class1, args.class2)
-            class_counter[cls] += 1
             writer.writerow([
                 row["block_id"], row["hawker_id"], row["walk_distance_m"],
-                row["walk_duration_s"], cls, CLASS_LABELS[cls],
-                "true" if hawker_fresh[row["hawker_id"]] else "false",
+                row["walk_duration_s"], classify(float(row["walk_distance_m"])),
             ])
 
-    # ---------------- nearest hawker per block ---------------- #
+    # nearest hawker per block, by each of the three metrics
     best_walk: dict[str, tuple[float, str]] = {}
     best_straight: dict[str, tuple[float, str]] = {}
     best_manhattan: dict[str, tuple[float, str]] = {}
@@ -137,7 +129,7 @@ def derive_proximity(args, outdir: Path) -> None:
         if block_id not in best_manhattan or manhattan < best_manhattan[block_id][0]:
             best_manhattan[block_id] = (manhattan, hawker_id)
 
-    nearest_path = outdir / "hdb_block_nearest.csv"
+    nearest_path = OUTDIR / "hdb_block_nearest.csv"
     nearest_class_counter: Counter[int] = Counter()
     with nearest_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -149,7 +141,7 @@ def derive_proximity(args, outdir: Path) -> None:
         meta = {row["block_id"]: row for row in pairs}
         for block_id in sorted(best_walk):
             walk, hawker_id = best_walk[block_id]
-            cls = classify(walk, args.class1, args.class2)
+            cls = classify(walk)
             nearest_class_counter[cls] += 1
             row = meta[block_id]
             writer.writerow([
@@ -159,8 +151,8 @@ def derive_proximity(args, outdir: Path) -> None:
                 "true" if hawker_fresh[hawker_id] else "false",
             ])
 
-    # ---------------- how much does the metric matter? ---------------- #
-    comparison_path = outdir / "method_comparison.csv"
+    # how much does the metric matter?
+    comparison_path = OUTDIR / "method_comparison.csv"
     rows_out = []
     for block_id in sorted(best_walk):
         walk_d, walk_h = best_walk[block_id]
@@ -168,12 +160,9 @@ def derive_proximity(args, outdir: Path) -> None:
         manhattan_d, manhattan_h = best_manhattan[block_id]
         rows_out.append([
             block_id,
-            walk_h, round(walk_d, 1),
-            classify(walk_d, args.class1, args.class2),
-            straight_h, round(straight_d, 1),
-            classify(straight_d, args.class1, args.class2),
-            manhattan_h, round(manhattan_d, 1),
-            classify(manhattan_d, args.class1, args.class2),
+            walk_h, round(walk_d, 1), classify(walk_d),
+            straight_h, round(straight_d, 1), classify(straight_d),
+            manhattan_h, round(manhattan_d, 1), classify(manhattan_d),
         ])
     with comparison_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -185,7 +174,6 @@ def derive_proximity(args, outdir: Path) -> None:
         ])
         writer.writerows(rows_out)
 
-    # ---------------- statistics ---------------- #
     different_centre_straight = sum(1 for r in rows_out if r[1] != r[4])
     different_centre_manhattan = sum(1 for r in rows_out if r[1] != r[7])
     class_diff_straight = sum(1 for r in rows_out if r[3] != r[6])
@@ -208,7 +196,6 @@ def derive_proximity(args, outdir: Path) -> None:
 
     total_blocks = len(rows_out)
 
-    # ------------------------------------------------------------------ #
     # Is straight-line distance salvageable with better thresholds?
     #
     # Applying the *walking* thresholds (500/1000) to a straight-line distance
@@ -217,7 +204,6 @@ def derive_proximity(args, outdir: Path) -> None:
     # straight-line thresholds that reproduce the walking classes well. We find
     # the optimal pair by exhaustive search over candidate cut points, which is
     # cheap because the correct-count can be read off prefix sums.
-    # ------------------------------------------------------------------ #
     straight_to_walk_nearest = {
         (row["block_id"], row["hawker_id"]): float(row["straight_line_m"])
         for row in pairs
@@ -233,8 +219,7 @@ def derive_proximity(args, outdir: Path) -> None:
         """Return (best accuracy %, t1, t2) for a 3-class split on `metric_of`."""
         samples = []
         for block_id, (walk_d, hawker_id) in best_walk.items():
-            samples.append((metric_of[(block_id, hawker_id)],
-                            classify(walk_d, args.class1, args.class2)))
+            samples.append((metric_of[(block_id, hawker_id)], classify(walk_d)))
         samples.sort()
         n = len(samples)
         # prefix counts of the true class among the first i sorted samples
@@ -275,19 +260,19 @@ def derive_proximity(args, outdir: Path) -> None:
     print("\n" + "=" * 70)
     print("PROXIMITY CLASSES")
     print("=" * 70)
-    print(f"class 1  walk <= {args.class1:.0f} m : {nearest_class_counter[1]:5d} blocks "
+    print(f"class 1  walk <= {CLASS1_MAX:.0f} m : {nearest_class_counter[1]:5d} blocks "
           f"({100 * nearest_class_counter[1] / total_blocks:.1f}%)")
-    print(f"class 2  {args.class1:.0f}-{args.class2:.0f} m     : "
+    print(f"class 2  {CLASS1_MAX:.0f}-{CLASS2_MAX:.0f} m     : "
           f"{nearest_class_counter[2]:5d} blocks "
           f"({100 * nearest_class_counter[2] / total_blocks:.1f}%)")
-    print(f"class 3  walk >  {args.class2:.0f} m : {nearest_class_counter[3]:5d} blocks "
+    print(f"class 3  walk >  {CLASS2_MAX:.0f} m : {nearest_class_counter[3]:5d} blocks "
           f"({100 * nearest_class_counter[3] / total_blocks:.1f}%)")
     print(f"total blocks with a hawker       : {total_blocks}")
 
     residential_counter: Counter[int] = Counter()
     for block_id, (walk_d, _) in best_walk.items():
         if is_residential[block_id]:
-            residential_counter[classify(walk_d, args.class1, args.class2)] += 1
+            residential_counter[classify(walk_d)] += 1
     residential_total = sum(residential_counter.values())
     print(f"\nrestricted to the {residential_total} residential blocks "
           f"(the ones that can appear in a resale transaction):")
@@ -340,10 +325,7 @@ def derive_proximity(args, outdir: Path) -> None:
     print(f"wrote {comparison_path}")
 
 
-# =========================================================================== #
-# Part 2: attach the resale fact table to the block dimension
-# =========================================================================== #
-# The HDB property file uses 3-letter contract-town codes; the resale file uses
+# the HDB property file uses 3-letter contract-town codes; the resale file uses
 # full planning-town names. The mapping is 1:1 over all 26 towns and was
 # verified block by block against the team's hdb_block_clean_YM.csv.
 TOWN_CODE_TO_NAME = {
@@ -358,7 +340,7 @@ TOWN_CODE_TO_NAME = {
     "WL": "WOODLANDS", "YS": "YISHUN",
 }
 
-# Only abbreviations that are unambiguous in Singapore street names.
+# only abbreviations that are unambiguous in Singapore street names
 ABBREV = {
     "AVE": "AVENUE", "AV": "AVENUE", "ST": "STREET", "RD": "ROAD",
     "DR": "DRIVE", "CRES": "CRESCENT", "CL": "CLOSE", "JLN": "JALAN",
@@ -366,20 +348,6 @@ ABBREV = {
     "BT": "BUKIT", "KG": "KAMPONG", "KPG": "KAMPONG", "TG": "TANJONG",
     "CTRL": "CENTRAL", "IND": "INDUSTRIAL",
 }
-
-
-def _first_existing(*paths: str) -> str:
-    """Resolve a data file that may live in either layout.
-
-    Standalone (this folder is the project root):  data/resale_cleaned.csv
-    Inside the team repo (this folder is hawker_geo/):  data/src/resale/
-    The 75 MB resale export is deliberately not duplicated, so the second
-    layout is the normal one there.
-    """
-    for path in paths:
-        if os.path.exists(path):
-            return path
-    return paths[0]
 
 
 def clean_block(value: str) -> str:
@@ -419,7 +387,7 @@ def read_blocks(path: str):
     return exact, expanded, town_of
 
 
-def join_resale(args, outdir: Path) -> None:
+def join_resale() -> None:
     """Match every resale transaction to a block_id.
 
     Stage 1 exact match on uppercased, whitespace-collapsed (block, street);
@@ -428,19 +396,11 @@ def join_resale(args, outdir: Path) -> None:
     demolished blocks, not spelling variants). A candidate is only accepted
     when it is unambiguous; anything still unmatched is reported, never guessed.
     """
-    resale_default = _first_existing(
-        os.path.join(BASE, "data", "src", "resale", "RESALE_CLEANED.csv"),
-        os.path.join(BASE, "data", "resale_cleaned.csv"),
-    )
-    removed_default = _first_existing(
-        os.path.join(BASE, "data", "src", "resale", "RESALE_REMOVED.csv"),
-        os.path.join(BASE, "data", "resale_removed.csv"),
-    )
-    if not os.path.exists(resale_default):
-        print(f"\n[resale] skipped: {resale_default} not found")
+    if not os.path.exists(RESALE_CSV):
+        print(f"\n[resale] skipped: {RESALE_CSV} not found")
         return
 
-    exact, expanded, town_of = read_blocks(args.blocks)
+    exact, expanded, town_of = read_blocks(str(BLOCKS_CSV))
     ambiguous_exact = {k: v for k, v in exact.items() if len(v) > 1}
     print(f"\n[resale] {len(town_of)} blocks, {len(exact)} distinct exact keys")
     if ambiguous_exact:
@@ -452,9 +412,9 @@ def join_resale(args, outdir: Path) -> None:
     miss_years: dict[tuple[str, str], list[str]] = defaultdict(list)
     miss_town: dict[tuple[str, str], str] = {}
 
-    out_txn = outdir / "resale_transaction.csv"
-    out_miss = outdir / "resale_unmatched.csv"
-    out_report = outdir / "resale_join_report.txt"
+    out_txn = OUTDIR / "resale_transaction.csv"
+    out_miss = OUTDIR / "resale_unmatched.csv"
+    out_report = OUTDIR / "resale_join_report.txt"
 
     txn_handle = open(out_txn, "w", newline="", encoding="utf-8")
     writer = csv.writer(txn_handle)
@@ -465,7 +425,7 @@ def join_resale(args, outdir: Path) -> None:
     ])
 
     seq = 0
-    with open(resale_default, newline="", encoding="utf-8-sig") as handle:
+    with open(RESALE_CSV, newline="", encoding="utf-8-sig") as handle:
         for row in csv.DictReader(handle):
             seq += 1
             resale_id = f"R{seq:07d}"
@@ -512,9 +472,11 @@ def join_resale(args, outdir: Path) -> None:
             out.writerow([key[0], key[1], miss_town[key], count,
                           min(years), max(years)])
 
+    # rows the teammate's RESALE_CLEAN.py rejected upstream, for lineage
+    removed_csv = HERE / "data" / "src" / "resale" / "RESALE_REMOVED.csv"
     removed_rows = 0
-    if os.path.exists(removed_default):
-        with open(removed_default, newline="", encoding="utf-8-sig") as handle:
+    if os.path.exists(removed_csv):
+        with open(removed_csv, newline="", encoding="utf-8-sig") as handle:
             removed_rows = sum(1 for _ in csv.DictReader(handle))
 
     total = seq
@@ -529,7 +491,8 @@ def join_resale(args, outdir: Path) -> None:
         f"unmatched (block_id = NULL)  : {unmatched:,}"
         f"  ({100 * unmatched / total:.2f}%)",
         f"distinct unmatched blocks    : {len(miss_counter):,}",
-        f"rows rejected upstream       : {removed_rows:,}",
+        f"rows rejected upstream       : {removed_rows:,}"
+        f"  (see data/src/resale/RESALE_REMOVED.csv)",
         f"town inconsistencies         : {len(town_mismatch):,}",
         "",
     ]
@@ -556,6 +519,7 @@ def join_resale(args, outdir: Path) -> None:
         lines.append(f"  {key[0]:<5} {key[1]:<28} {miss_town[key]:<14} "
                      f"{count:>5} rows  {min(years)}-{max(years)}")
     lines.append("")
+
     lines.append(
         "Interpretation: the unmatched blocks are ones demolished or redeveloped"
         " before the current HDB property register snapshot, so no geocode - and"
@@ -573,28 +537,10 @@ def join_resale(args, outdir: Path) -> None:
     print(f"wrote {out_report}")
 
 
-# =========================================================================== #
 def main() -> int:
-    here = Path(__file__).resolve().parents[2]  # repo root
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--walk", default=str(here / "data" / "hawker_geo" / "hdb_hawker_walk.csv"))
-    parser.add_argument("--hdb", default=str(here / "data" / "raw_data" / "hdb.csv"))
-    parser.add_argument("--hawker", default=str(here / "data" / "hawker_geo" / "hawker_centre.csv"))
-    parser.add_argument("--blocks", default=str(here / "data" / "hawker_geo" / "hdb_block.csv"),
-                        help="block dimension the resale join maps onto")
-    parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
-    parser.add_argument("--class1", type=float, default=500.0)
-    parser.add_argument("--class2", type=float, default=1000.0)
-    parser.add_argument("--skip-resale", action="store_true",
-                        help="skip the resale join (needs RESALE_CLEANED.csv)")
-    args = parser.parse_args()
-
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    derive_proximity(args, outdir)
-    if not args.skip_resale:
-        join_resale(args, outdir)
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    derive_proximity()
+    join_resale()
     return 0
 
 

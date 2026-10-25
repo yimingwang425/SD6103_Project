@@ -1,31 +1,19 @@
 #!/usr/bin/env python3
 """
-01_clean_hawker_geo.py
-======================
-Clean the raw hawker_geo.csv export (data.gov.sg "Hawker Centres (GEOJSON)")
-into the DB-ready `hawker_centre` table: coordinate validation against the
-Singapore bounding box, text normalisation, postal-code extraction, and a join
-to the official data.gov.sg register (107 rows) for the stall counts Q5 needs.
+01_clean_hawker_geo.py - clean the raw hawker_geo.csv export into the
+DB-ready hawker_centre table: coordinate validation, text normalisation,
+postal-code extraction, and a join to the official data.gov.sg register for
+the stall counts Q5 needs.
 
-Design decisions
-----------------
-* The geo file (129 rows) is authoritative for *locations*, the official
-  register for *attributes*. All 129 rows are kept; the 22 without an official
-  record get NULL stall counts (opened after the register's snapshot), so Q5's
-  `no_of_mkt_produce_stalls > 0` predicate excludes them instead of silently
-  treating unknown as "no fresh market".
-* The join is enforced one-to-one; interim/replacement centres are NOT merged.
-* Missing addresses stay NULL rather than fabricated.
-
-Usage
------
-    python 01_clean_hawker_geo.py
-    python 01_clean_hawker_geo.py --raw "hawker_geo (1).csv" --outdir output
+The geo file (129 rows) is authoritative for locations, the official register
+(107 rows) for attributes. All 129 rows are kept; the 22 without an official
+record get NULL stall counts (opened after the register's snapshot), so Q5's
+`no_of_mkt_produce_stalls > 0` predicate excludes them instead of silently
+treating unknown as "no fresh market".
 """
 
 from __future__ import annotations
 
-import argparse
 import csv
 import json
 import re
@@ -33,9 +21,10 @@ import sys
 import urllib.request
 from pathlib import Path
 
-# --------------------------------------------------------------------------- #
-# Configuration
-# --------------------------------------------------------------------------- #
+HERE = Path(__file__).resolve().parents[2]          # repo root
+RAW_CSV = HERE / "data" / "raw_data" / "hawker_geo.csv"
+OFFICIAL_CACHE = HERE / "data" / "raw_data" / "hawker_official_raw.json"
+OUTDIR = HERE / "data" / "hawker_geo"
 
 OFFICIAL_RESOURCE_ID = "d_68a42f09f350881996d83f9cd73ab02f"
 OFFICIAL_API = (
@@ -43,54 +32,41 @@ OFFICIAL_API = (
     f"?resource_id={OFFICIAL_RESOURCE_ID}&limit=500"
 )
 
-# Singapore mainland + islands bounding box. Anything outside is a corrupt point.
+# Singapore mainland + islands bounding box; anything outside is a corrupt point
 SG_BBOX = {"lat_min": 1.130, "lat_max": 1.500, "lon_min": 103.550, "lon_max": 104.150}
 
-# Centres renamed between the official snapshot and the GeoJSON snapshot. Their
-# postal codes differ too, so neither postal nor fuzzy matching can recover them.
-#   geo name (lower-cased, as it appears in the raw file) -> official name
+# centres renamed between the two snapshots - their postal codes differ too,
+# so neither postal nor fuzzy matching can recover them
 MANUAL_ALIASES = {
     "market street hawker centre": "Market Street Food Centre",
     "tanglin halt hawker centre & market": "Blks 1A/ 2A/ 3A Commonwealth Drive",
 }
 
-# Deliberately minimal: only tokens that carry no identifying information.
-# Notably we do NOT strip "interim", "market" or "hawker", because doing so
-# collapses genuinely distinct facilities onto each other (e.g. the interim
-# Bukit Timah hawker centre vs the rebuilt Bukit Timah Market).
+# deliberately minimal: only tokens that carry no identifying information.
+# "market"/"hawker" must NOT be stripped - doing so collapses genuinely
+# distinct facilities onto each other (interim Bukit Timah vs Bukit Timah Market)
 STOPWORDS = {"the", "and", "of", "blk", "block", "blks", "blocks"}
 
 FUZZY_THRESHOLD = 0.80
 
 
-# --------------------------------------------------------------------------- #
-# Helpers
-# --------------------------------------------------------------------------- #
-
 def clean_text(value: str | None) -> str:
     """Normalise whitespace artefacts present in the raw export."""
     if value is None:
         return ""
-    # The raw file contains U+00A0 (non-breaking space) inside addresses,
-    # e.g. "Singapore\xa0738623".
+    # U+00A0 (non-breaking space) inside addresses, e.g. "Singapore\xa0738623"
     text = value.replace("\u00a0", " ").replace("\u200b", "")
     text = text.strip()
-    # Some addresses are missing the space after the comma: "Blk 4,Woodlands".
-    text = re.sub(r"\s*,\s*", ", ", text)
-    # ... and the space before "Singapore": "St 12,Singapore 738623".
+    text = re.sub(r"\s*,\s*", ", ", text)            # "Blk 4,Woodlands"
     text = re.sub(r"(?<=[,\w])Singapore\b", " Singapore", text)
     text = re.sub(r"\s{2,}", " ", text)
     return text.strip(" ,")
 
 
 def split_name(raw_name: str) -> tuple[str, str]:
-    """
-    Split "Blk 51 Old Airport Road (51 Old Airport Road Food Centre)" into
-    ("Blk 51 Old Airport Road", "51 Old Airport Road Food Centre").
-
-    The bracketed part is the colloquial/official name and is kept as `alias`;
-    the part before the bracket is the block+street descriptor.
-    """
+    """Split "Blk 51 Old Airport Road (51 Old Airport Road Food Centre)" into
+    ("Blk 51 Old Airport Road", "51 Old Airport Road Food Centre"): the
+    bracketed part is the colloquial name and is kept as `alias`."""
     raw_name = clean_text(raw_name)
     match = re.match(r"^(.*?)\s*\(([^()]*)\)\s*$", raw_name)
     if match:
@@ -105,7 +81,7 @@ def extract_postal(address: str) -> str:
     """Return the 6-digit Singapore postal code, or '' if absent."""
     if not address:
         return ""
-    # Official dataset uses "S(289876)"; geo file uses "Singapore 289876".
+    # official dataset uses "S(289876)"; geo file uses "Singapore 289876"
     for pattern in (r"S\((\d{6})\)", r"\b(\d{6})\b"):
         match = re.search(pattern, address)
         if match:
@@ -127,7 +103,7 @@ def jaccard(a: set[str], b: set[str]) -> float:
 
 
 def parse_coord(value: str, kind: str, row_label: str, errors: list[str]) -> float | None:
-    """Parse a coordinate, validate it against the Singapore bounding box."""
+    """Parse a coordinate and validate it against the Singapore bounding box."""
     try:
         number = float(str(value).strip())
     except (TypeError, ValueError):
@@ -138,13 +114,13 @@ def parse_coord(value: str, kind: str, row_label: str, errors: list[str]) -> flo
     if not (low < number < high):
         errors.append(f"{row_label}: {kind} {number} outside Singapore bbox")
         return None
-    return round(number, 6)  # ~0.11 m resolution, plenty for walking distances
+    return round(number, 6)      # ~0.11 m resolution, plenty for walking distances
 
 
 def fetch_official(cache_path: Path) -> list[dict]:
     """Fetch the official hawker-centre dataset, with an on-disk cache."""
     if cache_path.exists():
-        print(f"[official] using cache {cache_path}")
+        print(f"[official] using cache {cache_path.name}")
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
     else:
         print(f"[official] downloading {OFFICIAL_RESOURCE_ID} ...")
@@ -161,28 +137,16 @@ def fetch_official(cache_path: Path) -> list[dict]:
     return records
 
 
-# --------------------------------------------------------------------------- #
-# Main
-# --------------------------------------------------------------------------- #
-
 def main() -> int:
-    here = Path(__file__).resolve().parents[2]  # repo root (scripts/hawker_geo -> scripts -> .)
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--raw", default=str(here / "data" / "raw_data" / "hawker_geo.csv"))
-    parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
-    args = parser.parse_args()
+    OUTDIR.mkdir(parents=True, exist_ok=True)
 
-    raw_path = Path(args.raw)
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-
-    with raw_path.open(encoding="utf-8-sig") as handle:
+    with RAW_CSV.open(encoding="utf-8-sig") as handle:
         raw_rows = list(csv.DictReader(handle))
-    print(f"[geo] read {len(raw_rows)} rows from {raw_path.name}")
+    print(f"[geo] read {len(raw_rows)} rows from {RAW_CSV.name}")
 
     errors: list[str] = []
 
-    # ---------------- 1. normalise the geo rows ---------------- #
+    # normalise the geo rows
     geo_rows: list[dict] = []
     for index, raw in enumerate(raw_rows):
         label = f"geo[{index}] {raw.get('NAME', '?')!r}"
@@ -197,19 +161,17 @@ def main() -> int:
             continue
 
         address = clean_text(raw.get("ADDRESS_MYENV", ""))
-        geo_rows.append(
-            {
-                "name": name,
-                "alias": alias,
-                "raw_name": clean_text(raw.get("NAME", "")),
-                "address": address,
-                "postal_code": extract_postal(address),
-                "latitude": lat,
-                "longitude": lon,
-            }
-        )
+        geo_rows.append({
+            "name": name,
+            "alias": alias,
+            "raw_name": clean_text(raw.get("NAME", "")),
+            "address": address,
+            "postal_code": extract_postal(address),
+            "latitude": lat,
+            "longitude": lon,
+        })
 
-    # ---------------- 2. exact duplicate detection ---------------- #
+    # exact duplicate detection
     seen: dict[tuple[str, str], str] = {}
     duplicates: list[str] = []
     deduped: list[dict] = []
@@ -224,8 +186,8 @@ def main() -> int:
     print(f"[geo] {len(geo_rows)} valid rows after validation/dedup "
           f"({len(errors)} errors, {len(duplicates)} duplicates)")
 
-    # ---------------- 3. join to the official dataset ---------------- #
-    official = fetch_official(here / "data" / "raw_data" / "hawker_official_raw.json")
+    # join to the official dataset, three passes, each record claimed at most once
+    official = fetch_official(OFFICIAL_CACHE)
     by_postal: dict[str, dict] = {}
     by_name: dict[str, dict] = {}
     for record in official:
@@ -239,7 +201,7 @@ def main() -> int:
         row["match_method"] = "none"
         row["official_record"] = None
 
-    # Pass 1 - postal code (exact and, as verified, one-to-one)
+    # pass 1: postal code (exact and, as verified, one-to-one)
     for row in geo_rows:
         postal = row["postal_code"]
         if postal and postal in by_postal:
@@ -249,7 +211,7 @@ def main() -> int:
                 row["match_method"] = "postal"
                 claimed.add(int(record["_id"]))
 
-    # Pass 2 - explicit alias table for renamed centres
+    # pass 2: explicit alias table for renamed centres
     for row in geo_rows:
         if row["official_record"] is not None:
             continue
@@ -261,9 +223,9 @@ def main() -> int:
                 row["match_method"] = "alias"
                 claimed.add(int(record["_id"]))
 
-    # Pass 3 - strict fuzzy fallback, never reusing an already-claimed record.
-    # In practice this matches nothing on this dataset; it exists so that a
-    # future refresh of either snapshot does not silently lose rows.
+    # pass 3: strict fuzzy fallback, never reusing an already-claimed record.
+    # Matches nothing on this dataset; it exists so a future refresh of either
+    # snapshot does not silently lose rows.
     for row in geo_rows:
         if row["official_record"] is not None:
             continue
@@ -280,19 +242,17 @@ def main() -> int:
             row["match_method"] = f"fuzzy({best_score:.2f})"
             claimed.add(int(best["_id"]))
 
-    # ---------------- 4. project the matched attributes ---------------- #
+    # project the matched attributes; unmatched centres keep NULL stall counts
+    # (unknown, not "no fresh market") so Q5 excludes them explicitly
     for row in geo_rows:
         record = row.pop("official_record")
         if record is None:
-            # Unknown, not "no fresh market": leave NULL so Q5's
-            # `no_of_mkt_produce_stalls > 0` filter excludes them explicitly.
             row.update(
                 official_id="", official_name="", type_of_centre="", owner="",
                 no_of_stalls="", no_of_cooked_food_stalls="",
-                no_of_mkt_produce_stalls="", has_fresh_market="",
+                no_of_mkt_produce_stalls="",
             )
             continue
-        produce = int(record["no_of_mkt_produce_stalls"])
         row.update(
             official_id=record["_id"],
             official_name=record["name_of_centre"],
@@ -300,19 +260,16 @@ def main() -> int:
             owner=record["owner"],
             no_of_stalls=record["no_of_stalls"],
             no_of_cooked_food_stalls=record["no_of_cooked_food_stalls"],
-            no_of_mkt_produce_stalls=produce,
-            # Q5 predicate: "hawker with fresh market stalls"
-            has_fresh_market="true" if produce > 0 else "false",
+            no_of_mkt_produce_stalls=record["no_of_mkt_produce_stalls"],
         )
 
-    # ---------------- 5. write the DB-ready table ---------------- #
+    # write the DB-ready table: exactly the hawker_centre columns, in order
     fieldnames = [
         "hawker_id", "name", "alias", "address", "postal_code",
-        "latitude", "longitude", "type_of_centre", "owner",
-        "no_of_stalls", "no_of_cooked_food_stalls", "no_of_mkt_produce_stalls",
-        "has_fresh_market", "official_id", "match_method",
+        "latitude", "longitude", "no_of_stalls", "no_of_cooked_food_stalls",
+        "no_of_mkt_produce_stalls",
     ]
-    output_path = outdir / "hawker_centre.csv"
+    output_path = OUTDIR / "hawker_centre.csv"
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
@@ -320,13 +277,15 @@ def main() -> int:
             row["hawker_id"] = f"H{index:03d}"
             writer.writerow(row)
 
-    # ---------------- 6. audit report ---------------- #
-    report_path = outdir / "hawker_centre_match_report.csv"
+    # audit report (keeps the provenance columns the table does not carry)
+    report_path = OUTDIR / "hawker_centre_match_report.csv"
     with report_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=["hawker_id", "name", "postal_code", "official_id",
-                        "official_name", "match_method", "address_missing"],
+                        "official_name", "type_of_centre", "owner",
+                        "no_of_mkt_produce_stalls", "match_method",
+                        "address_missing"],
             extrasaction="ignore",
         )
         writer.writeheader()
@@ -334,12 +293,18 @@ def main() -> int:
             row["address_missing"] = "true" if not row["address"] else "false"
             writer.writerow(row)
 
-    # ---------------- 7. console summary ---------------- #
+    # console summary
     total = len(geo_rows)
     by_method: dict[str, int] = {}
     for row in geo_rows:
         bucket = row["match_method"].split("(")[0]
         by_method[bucket] = by_method.get(bucket, 0) + 1
+
+    def known_stalls(row: dict) -> bool:
+        return row["no_of_mkt_produce_stalls"] != ""
+
+    with_market = sum(1 for r in geo_rows
+                      if known_stalls(r) and int(r["no_of_mkt_produce_stalls"]) > 0)
 
     print("\n" + "=" * 66)
     print("HAWKER GEO CLEANING SUMMARY")
@@ -352,9 +317,8 @@ def main() -> int:
     for method, count in sorted(by_method.items()):
         print(f"    via {method:<22}: {count}")
     print(f"official centres not in geo file: {len(official) - len(claimed)}")
-    print(f"centres with fresh market stalls: "
-          f"{sum(1 for r in geo_rows if r['has_fresh_market'] == 'true')}"
-          f"  (of {sum(1 for r in geo_rows if r['has_fresh_market'])} with known data)")
+    print(f"centres with fresh market stalls: {with_market} "
+          f"(of {sum(1 for r in geo_rows if known_stalls(r))} with known data)")
     if errors:
         print(f"\nvalidation errors ({len(errors)}):")
         for message in errors:
