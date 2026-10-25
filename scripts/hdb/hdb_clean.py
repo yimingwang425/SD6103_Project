@@ -8,7 +8,10 @@ import numpy as np
 import pandas as pd
 
 
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# scripts/hdb/hdb_clean.py -> <project root>/data
+BASE_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "data"
+)
 RAW_PATH = os.path.join(BASE_DIR, "raw_data", "hdb.csv")
 RESALE_DIR = os.path.join(BASE_DIR, "raw_data", "ResaleFlatPrices")
 OUT_DIR = os.path.join(BASE_DIR, "clean_data")

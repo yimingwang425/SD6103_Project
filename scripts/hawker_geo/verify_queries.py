@@ -17,7 +17,7 @@ def read(path):
     with path.open(encoding="utf-8-sig", newline="") as fh:
         return list(csv.DictReader(fh))
 
-blocks = read(CLEAN / "hdb_block_clean_YM.csv")
+blocks = read(CLEAN / "hdb_block_clean.csv")
 town_of = {(b["blk_no"], b["street_name"] if "street_name" in b else b["street"]):
            b["town_name"] for b in blocks}
 block_keys = set(town_of)

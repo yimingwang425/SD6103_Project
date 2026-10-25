@@ -17,11 +17,11 @@ BEGIN
     END IF;
 
     INSERT INTO public.hdb_block
-        (town_id, block_number, street, lease_commence_year, latitude, longitude, postal)
+        (town_id, block_number, street, year_completed, latitude, longitude, postal)
     SELECT pt.town_id,
            sh.block_number,
            sh.street,
-           CAST(sh.lease_commence_year AS INT),
+           CAST(sh.year_completed AS INT),
            CAST(sh.latitude AS NUMERIC(9,6)),
            CAST(sh.longitude AS NUMERIC(9,6)),
            sh.postal

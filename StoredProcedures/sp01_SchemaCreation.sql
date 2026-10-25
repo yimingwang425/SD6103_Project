@@ -33,7 +33,7 @@ BEGIN
         town_id INT NOT NULL,
         block_number VARCHAR(10)  NOT NULL,
         street VARCHAR(200) NOT NULL,
-        lease_commence_year INT,
+        year_completed INT,
         latitude NUMERIC(9,6),
         longitude NUMERIC(9,6),
         postal VARCHAR(6),
@@ -43,7 +43,7 @@ BEGIN
         CONSTRAINT uq_block_address UNIQUE (block_number, street),
         CONSTRAINT ck_block_lat CHECK (latitude  BETWEEN 1.15  AND 1.48),
         CONSTRAINT ck_block_lon CHECK (longitude BETWEEN 103.6 AND 104.42),
-        CONSTRAINT ck_block_lease CHECK (lease_commence_year BETWEEN 1900 AND 2100),
+        CONSTRAINT ck_block_year CHECK (year_completed BETWEEN 1900 AND 2100),
         CONSTRAINT ck_block_postal CHECK (postal ~ '^[0-9]{6}$')
     );
     RAISE NOTICE 'hdb_block schema created';
