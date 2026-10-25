@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-02_validate_distances.py - cross-check the OSRM walking distances from
-01_build_proximity.py against independent engines (--engine valhalla |
+04_validate_distances.py - cross-check the OSRM walking distances from
+02_walk_distances.py against independent engines (--engine valhalla |
 onemap --samples N), or re-route every pair through OneMap
 (--engine onemap --full, needs ONEMAP_TOKEN).
 """
@@ -63,7 +63,7 @@ def load_pairs() -> list[dict]:
     with WALK_CSV.open(encoding="utf-8") as handle:
         pairs = list(csv.DictReader(handle))
     if not pairs:
-        sys.exit("no routed pairs found - run 01_build_proximity.py --stage walk first")
+        sys.exit("no routed pairs found - run 02_walk_distances.py first")
     return pairs
 
 
