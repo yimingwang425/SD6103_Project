@@ -2,6 +2,10 @@
 """Re-implement Q4/Q5 in plain Python so the numbers quoted in the SQL
 comments can be checked without a running PostgreSQL server.
 
+Reads the team's cleaned data (data/clean_data/) and mirrors what the stored
+procedures load: only blocks present in hdb_block_clean_YM.csv, only flats
+whose six-field identity exists, only transactions whose block matched.
+
 percentile_cont(0.5) interpolates linearly, which for an even-sized sample is
 exactly the mean of the two middle values -- i.e. statistics.median().
 """
@@ -13,49 +17,56 @@ from collections import defaultdict
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[2]
-DATA = HERE / "data" / "hawker_geo"
+CLEAN = HERE / "data" / "clean_data"
+RESALE_DIR = CLEAN / "resale"
 
 
-def read(name):
-    with (DATA / name).open(encoding="utf-8", newline="") as fh:
+def read(path):
+    with path.open(encoding="utf-8-sig", newline="") as fh:
         return list(csv.DictReader(fh))
 
 
 # ---------------------------------------------------------------- load
-town_name = {int(r["town_id"]): r["town_name"] for r in read("town.csv")}
-town_of = {b["block_id"]: town_name.get(int(b["town_id"]), "")
-           for b in read("hdb_block.csv")}
-hawker = read("hawker_centre.csv")
-prox = read("hdb_hawker_proximity.csv")
-flat_of = {f["flat_id"]: f for f in read("hdb_flat.csv")}
-resale = read("resale_transaction.csv")
+blocks = read(CLEAN / "hdb_block_clean_YM.csv")          # 10,194 rows
+town_of = {(b["blk_no"], b["street_name"] if "street_name" in b else b["street"]):
+           b["town_name"] for b in blocks}
+block_keys = set(town_of)
+
+hawker = read(CLEAN / "hawker_centre.csv")               # 129 rows
+prox = read(CLEAN / "proximity.csv")                     # 63,340 rows
+
+resale = []
+for i in range(1, 6):
+    resale.extend(read(RESALE_DIR / f"file{i}_cleaned.csv"))
+print(f"[load] {len(resale):,} transactions, {len(block_keys):,} blocks, "
+      f"{len(prox):,} proximity pairs")
+
+# sp08 skips pairs whose block is not in hdb_block; mirror that here
+prox = [p for p in prox if (p["blk_no"], p["street"]) in block_keys]
+print(f"[load] {len(prox):,} pairs on blocks present in hdb_block")
 
 # hdb_block_proximity_level: MIN(level_id), MIN(distance_m) per block
-level: dict[str, int] = {}
-nearest: dict[str, float] = {}
+level: dict[tuple[str, str], int] = {}
 for p in prox:
-    bid = p["block_id"]
+    key = (p["blk_no"], p["street"])
     lv = int(p["level_id"])
-    d = float(p["distance_m"])
-    if bid not in level or lv < level[bid]:
-        level[bid] = lv
-    if bid not in nearest or d < nearest[bid]:
-        nearest[bid] = d
+    if key not in level or lv < level[key]:
+        level[key] = lv
 
 # ---------------------------------------------------------------- Q4
 priced = defaultdict(lambda: defaultdict(list))  # town -> level -> prices
 for t in resale:
-    if t["transaction_month"] < "2020-01-01":
+    year, month = int(t["month"][:4]), int(t["month"][5:7])
+    if (year, month) < (2020, 1):
         continue
-    flat = flat_of.get(t["flat_id"])
-    if flat is None:                       # INNER JOIN drops NULL / unmatched
+    if t["flat_type"] != "4 ROOM":
         continue
-    if flat["flat_type"] != "4 ROOM":
+    key = (t["block"], t["street_name"])
+    if key not in block_keys:            # INNER JOIN drops unmatched blocks
         continue
-    bid = flat["block_id"]
-    if bid not in level:
+    if key not in level:                 # no proximity row (cannot happen after the filter above)
         continue
-    priced[town_of[bid]][level[bid]].append(float(t["resale_price"]))
+    priced[town_of[key]][level[key]].append(float(t["resale_price"]))
 
 rows = []
 for town, by_level in priced.items():
@@ -82,20 +93,21 @@ for town in dropped:
 
 # ---------------------------------------------------------------- Q5
 # block_fresh: does the block have a fresh-market centre within 1000 m?
-market = {h["hawker_id"]: (h["no_of_mkt_produce_stalls"] not in ("", None)
-                           and int(h["no_of_mkt_produce_stalls"]) > 0)
+market = {h["hawker_name"]: (h["no_of_mkt_produce_stalls"] not in ("", None)
+                             and int(h["no_of_mkt_produce_stalls"]) > 0)
           for h in hawker}
-unknown = {h["hawker_id"] for h in hawker
+unknown = {h["hawker_name"] for h in hawker
            if h["no_of_mkt_produce_stalls"] in ("", None)}
 
-fresh_near: dict[str, bool] = {b: False for b in town_of}
-unknown_near: set[str] = set()
+fresh_near: dict[tuple[str, str], bool] = {k: False for k in block_keys}
+unknown_near: set[tuple[str, str]] = set()
 for p in prox:
+    key = (p["blk_no"], p["street"])
     if float(p["distance_m"]) <= 1000:
-        if market.get(p["hawker_id"], False):
-            fresh_near[p["block_id"]] = True
-        if p["hawker_id"] in unknown:
-            unknown_near.add(p["block_id"])
+        if market.get(p["hawker_name"], False):
+            fresh_near[key] = True
+        if p["hawker_name"] in unknown:
+            unknown_near.add(key)
 
 
 def q5(strict: bool) -> dict[bool, tuple[int, float, float]]:
@@ -103,18 +115,19 @@ def q5(strict: bool) -> dict[bool, tuple[int, float, float]]:
        strict=False -> attribute-unknown centres are treated as having one"""
     flag = dict(fresh_near)
     if not strict:
-        for bid in unknown_near:
-            flag[bid] = True
+        for key in unknown_near:
+            flag[key] = True
     buckets: dict[bool, list[float]] = defaultdict(list)
     for t in resale:
-        if t["transaction_month"] < "2020-01-01":
+        year, month = int(t["month"][:4]), int(t["month"][5:7])
+        if (year, month) < (2020, 1):
             continue
-        flat = flat_of.get(t["flat_id"])
-        if flat is None or flat["flat_type"] != "4 ROOM":
+        if t["flat_type"] != "4 ROOM":
             continue
-        if flat["block_id"] not in flag:
+        key = (t["block"], t["street_name"])
+        if key not in flag:
             continue
-        buckets[flag[flat["block_id"]]].append(float(t["resale_price"]))
+        buckets[flag[key]].append(float(t["resale_price"]))
     return {k: (len(v), round(statistics.median(v)), round(sum(v) / len(v)))
             for k, v in buckets.items()}
 
@@ -128,15 +141,15 @@ for label, strict in (("Q5 strict ", True), ("Q5 lenient", False)):
     print(f"{'':11}  median gap  {gap:+.1f}%")
 
 # ---------------------------------------------------------------- coverage
-covered = {p["block_id"] for p in prox
-           if float(p["distance_m"]) <= 3000 and market.get(p["hawker_id"], False)}
-unknown_only = {p["block_id"] for p in prox
+covered = {(p["blk_no"], p["street"]) for p in prox
+           if float(p["distance_m"]) <= 3000 and market.get(p["hawker_name"], False)}
+unknown_only = {(p["blk_no"], p["street"]) for p in prox
                 if float(p["distance_m"]) <= 3000
-                and p["hawker_id"] in unknown}
-no_centre = set(town_of) - {p["block_id"] for p in prox
-                            if float(p["distance_m"]) <= 3000}
-print(f"\ncoverage: {len(set(town_of)) - len(covered):,} of {len(town_of):,} blocks "
-      f"({(len(town_of) - len(covered)) / len(town_of) * 100:.1f}%) have no known "
+                and p["hawker_name"] in unknown}
+no_centre = block_keys - {(p["blk_no"], p["street"]) for p in prox
+                          if float(p["distance_m"]) <= 3000}
+print(f"\ncoverage: {len(block_keys) - len(covered):,} of {len(block_keys):,} blocks "
+      f"({(len(block_keys) - len(covered)) / len(block_keys) * 100:.1f}%) have no known "
       f"fresh-market centre within 3 km")
 print(f"  of those, {len(unknown_only - covered):,} have only attribute-unknown "
       f"centres nearby, {len(no_centre - covered):,} have no centre at all")
