@@ -111,36 +111,35 @@ BEGIN
     -- creating proximity_level schema; walking bands (min, max], top level open-ended
     CREATE TABLE IF NOT EXISTS public.proximity_level (
         level_id       INT          PRIMARY KEY,
-        category       VARCHAR(10)  NOT NULL UNIQUE,
+        category       VARCHAR(50)  NOT NULL UNIQUE,
         distance_min_m NUMERIC(8,2),
         distance_max_m NUMERIC(8,2)
     );
     RAISE NOTICE 'proximity_level schema created';
 
-    -- creating proximity schema; level_id is CHECKed against distance_m, so the table cannot drift from the bands
+    -- creating proximity schema; level is derived from distance_m by the view below, not stored (3NF)
     CREATE TABLE IF NOT EXISTS public.proximity (
         block_id   INT          NOT NULL,
         hawker_id  INT          NOT NULL,
-        level_id   INT          NOT NULL,
         distance_m NUMERIC(8,2) NOT NULL CHECK (distance_m > 0),
 
         CONSTRAINT pk_proximity PRIMARY KEY (block_id, hawker_id),
         CONSTRAINT fk_prox_block FOREIGN KEY (block_id) REFERENCES public.hdb_block (block_id),
-        CONSTRAINT fk_prox_hawker FOREIGN KEY (hawker_id) REFERENCES public.hawker_centre (hawker_id),
-        CONSTRAINT fk_prox_level FOREIGN KEY (level_id) REFERENCES public.proximity_level (level_id),
-        CONSTRAINT proximity_level_matches_distance CHECK (
-            (level_id = 1 AND distance_m <= 500)
-            OR (level_id = 2 AND distance_m > 500 AND distance_m <= 1000)
-            OR (level_id = 3 AND distance_m > 1000))
+        CONSTRAINT fk_prox_hawker FOREIGN KEY (hawker_id) REFERENCES public.hawker_centre (hawker_id)
     );
     RAISE NOTICE 'proximity schema created';
 
-    -- a block's own level = the nearest centre it can walk to (what Q4 joins on)
+    -- a block's own level = the level of the nearest centre it can walk to
+    -- (what Q4 joins on); level_id derived by range join against the bands
     CREATE OR REPLACE VIEW public.hdb_block_proximity_level AS
-    SELECT block_id,
-           MIN(level_id)   AS level_id,
-           MIN(distance_m) AS nearest_distance_m
-    FROM   public.proximity GROUP BY block_id;
+    SELECT p.block_id,
+           MIN(pl.level_id)   AS level_id,
+           MIN(p.distance_m) AS nearest_distance_m
+    FROM   public.proximity p
+    JOIN   public.proximity_level pl
+           ON  p.distance_m > pl.distance_min_m
+           AND (pl.distance_max_m IS NULL OR p.distance_m <= pl.distance_max_m)
+    GROUP  BY p.block_id;
 
     RAISE NOTICE '--------------------------------------------';
     RAISE NOTICE 'schema built in %ms',

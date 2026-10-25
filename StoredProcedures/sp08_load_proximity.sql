@@ -27,10 +27,9 @@ BEGIN
     END IF;
 
     INSERT INTO public.proximity
-        (block_id, hawker_id, level_id, distance_m)
+        (block_id, hawker_id, distance_m)
     SELECT b.block_id,
            h.hawker_id,
-           CAST(s.level_id AS INT),
            CAST(s.distance_m AS NUMERIC(8,2))
     FROM   staging.proximity s
     JOIN   public.hdb_block b

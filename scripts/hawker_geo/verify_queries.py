@@ -25,6 +25,16 @@ block_keys = set(town_of)
 hawker = read(CLEAN / "hawker_centre.csv")
 prox = read(CLEAN / "proximity.csv")
 
+bands = [(int(r["level_id"]), float(r["distance_min_m"]),
+          float(r["distance_max_m"]) if r["distance_max_m"] else None)
+         for r in read(CLEAN / "proximity_level.csv")]
+
+def level_of(distance_m):
+    for lid, lo, hi in bands:
+        if distance_m > lo and (hi is None or distance_m <= hi):
+            return lid
+    raise ValueError(f"no band covers {distance_m} m")
+
 resale = []
 for i in range(1, 6):
     resale.extend(read(RESALE_DIR / f"file{i}_cleaned.csv"))
@@ -37,7 +47,7 @@ print(f"[load] {len(prox):,} pairs on blocks present in hdb_block")
 level: dict[tuple[str, str], int] = {}
 for p in prox:
     key = (p["blk_no"], p["street"])
-    lv = int(p["level_id"])
+    lv = level_of(float(p["distance_m"]))
     if key not in level or lv < level[key]:
         level[key] = lv
 
