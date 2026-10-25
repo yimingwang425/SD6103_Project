@@ -2,41 +2,20 @@
 """
 01_clean_hawker_geo.py
 ======================
-Data Systems Project - Hawker-geo workstream (Task 2.1 data acquisition).
-
-Takes the raw `hawker_geo.csv` export (extracted from the data.gov.sg
-"Hawker Centres (GEOJSON)" dataset) and turns it into a DB-ready table for the
-`hawker_centre` entity.
-
-What this script does
----------------------
-1. Structural validation   - coordinate parsing, Singapore bounding box, precision.
-2. Text normalisation      - non-breaking spaces, missing spaces after commas,
-                             parenthetical aliases split into their own column.
-3. Address parsing         - postal code extraction (the reliable join key).
-4. Enrichment              - join to the official data.gov.sg "Hawker Centres"
-                             dataset (107 rows) to obtain stall counts, in
-                             particular `no_of_mkt_produce_stalls`, which is what
-                             Query Q5 ("hawker with fresh market stalls") needs.
-5. Join strategy           - postal code first (exact, verified one-to-one),
-                             then a small explicit alias table for centres that
-                             were renamed between the two source snapshots, then
-                             a *strict* fuzzy fallback that cannot steal an
-                             already-claimed official record.
-6. Output                  - output/hawker_centre.csv + a match audit report.
+Clean the raw hawker_geo.csv export (data.gov.sg "Hawker Centres (GEOJSON)")
+into the DB-ready `hawker_centre` table: coordinate validation against the
+Singapore bounding box, text normalisation, postal-code extraction, and a join
+to the official data.gov.sg register (107 rows) for the stall counts Q5 needs.
 
 Design decisions
 ----------------
-* The geo file (129 rows) is authoritative for *locations*; the official
-  dataset (107 rows) is authoritative for *attributes*. We keep all 129 rows and
-  LEFT JOIN the attributes. Centres with no official record get NULL stall
-  counts (they are all hawker centres opened after the official snapshot was
-  taken), so Q5's `no_of_mkt_produce_stalls > 0` predicate excludes them rather
-  than silently treating them as "no fresh market".
-* The join is enforced to be one-to-one. Two geo rows describe the same site as
-  one official row only when they really are the same physical facility; the
-  *interim* / *replacement* centres are deliberately NOT merged.
-* Missing addresses are left NULL rather than fabricated.
+* The geo file (129 rows) is authoritative for *locations*, the official
+  register for *attributes*. All 129 rows are kept; the 22 without an official
+  record get NULL stall counts (opened after the register's snapshot), so Q5's
+  `no_of_mkt_produce_stalls > 0` predicate excludes them instead of silently
+  treating unknown as "no fresh market".
+* The join is enforced one-to-one; interim/replacement centres are NOT merged.
+* Missing addresses stay NULL rather than fabricated.
 
 Usage
 -----

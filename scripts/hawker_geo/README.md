@@ -15,7 +15,7 @@ Data Systems Project · AY26S1 · 负责范围：**hawker centre 地理数据 + 
 | Task 1.1 | "To link HDB flats with nearby hawker centres, you should define **three distinct levels of proximity**" | 三级 proximity 定义（见 §4） |
 | Task 1.1 | "You will need to **model the chosen proximity in your ER model** as well" | HDB Flat ↔ Hawker Centre 的 M:N 关系 + 关系上的属性（距离、等级） |
 | Task 1.1 | "other options **may require additional data or API calls**" | 这句话是教授在明示：想拿高分就得调外部接口。我们正好走这条路 |
-| Task 1.2 | "Map the ER diagram to a relational schema in 3NF/BCNF"、"defining constraints as precisely as possible" | `hawker_centre`、`hawker_proximity` 两张表的 DDL（见 `04_schema_hawker.sql`） |
+| Task 1.2 | "Map the ER diagram to a relational schema in 3NF/BCNF"、"defining constraints as precisely as possible" | `hawker_centre`、`hawker_proximity` 两张表的 DDL（见 `schema_hawker.sql`） |
 | Task 2.1 | "write code for automated and reproducible parsing, extraction, and transformation" | `01_clean_hawker_geo.py` |
 | Task 2.1 | "you may need to perform additional computations, use **external services**, or supplementary datasets to acquire data for the proximity levels" | `02_compute_walk_distance.py`（OSRM 步行路网） |
 | Task 2.2 | "produce a **.csv file for each table**" | `output/` 下三份 CSV，可直接 `\copy` |
@@ -368,7 +368,7 @@ Q5 需要"有 fresh market stalls 的 hawker"。有 **4,320 个 block（34.7%）
 
 在此之前我们这块是**断链**的：`hdb_block.block_id` 是我们自己合成的 `B00001`，而 resale 文件里只有 `block` + `street_name` 文本。没有这个映射，Q4/Q5 一行都跑不出来。
 
-数据来自组内仓库 `SD6103_Project/data/src/resale/`（`RESALE_CLEAN.py` 清洗，986,720 行，1990-01 至 2026-09，51 行剔除记录留在 `RESALE_REMOVED.csv`）。连接由 `08_join_resale.py` 完成。
+数据来自组内仓库 `SD6103_Project/data/src/resale/`（`RESALE_CLEAN.py` 清洗，986,720 行，1990-01 至 2026-09，51 行剔除记录留在 `RESALE_REMOVED.csv`）。连接由 `03_derive_proximity.py` 第二段完成。
 
 **匹配策略：先精确，再兜底，绝不猜。**
 
@@ -396,7 +396,7 @@ Q5 需要"有 fresh market stalls 的 hawker"。有 **4,320 个 block（34.7%）
 
 **验证结果**（4 房，2020 年以后，避免户型与楼龄混淆）：
 
-- **Q4**：三类齐全且每类 ≥30 笔的城镇 **21 / 26**（完整 21 行结果见 `09_queries_hawker.sql` 注释）。被刷掉的 5 个城镇分两种性质，报告里要分开写：4 个是**结构性的**——BT、MP 没有 class-3 房源，PG 没有 class-1，SGN 只有 class-3，这是地理事实、不是缺数据；只有 **CT 中区**是**样本太薄**（n1=440、n2=80，但 n3 只有 10 笔），是"远离小贩中心的房子确实存在、但少到算不出中位数"的唯一例子；
+- **Q4**：三类齐全且每类 ≥30 笔的城镇 **21 / 26**（完整 21 行结果见 `queries_hawker.sql` 注释）。被刷掉的 5 个城镇分两种性质，报告里要分开写：4 个是**结构性的**——BT、MP 没有 class-3 房源，PG 没有 class-1，SGN 只有 class-3，这是地理事实、不是缺数据；只有 **CT 中区**是**样本太薄**（n1=440、n2=80，但 n3 只有 10 笔），是"远离小贩中心的房子确实存在、但少到算不出中位数"的唯一例子；
 - **Q5**：1 km 内有已知菜市场中心的 4 房，中位价 S$615,000；没有的 S$536,000，**高 14.7%**。若把 23 家属性未知的中心视为"有菜市场"，差距收窄到 **+5.0%**（新镇被并入"有"这一组，把均值拉低）——这个跨度必须在报告里说明，它是口径差异，不是数据错误。
 
 ---
@@ -409,14 +409,12 @@ Q5 需要"有 fresh market stalls 的 hawker"。有 **4,320 个 block（34.7%）
 scripts/hawker_geo/
 ├── 01_clean_hawker_geo.py        清洗 + join 官方数据集
 ├── 02_compute_walk_distance.py   OSRM 步行距离（可断点续跑）
-├── 03_derive_proximity.py        分级 + 与直线/曼哈顿的对比（含最优阈值搜索）
-├── 04_schema_hawker.sql          建表 DDL（含 CHECK 约束）
-├── 05_validate_osrm.py           用 Valhalla 交叉验证距离
-├── 06_validate_onemap.py         用 OneMap（SLA 官方路网）交叉验证距离
-├── 07_reroute_onemap.py          用 OneMap 全量重算 63,340 对（可断点续跑，--merge-only 秒级重建）
-├── 08_join_resale.py             resale 交易 → block_id 连接（Q4/Q5 的前提）
-├── 09_queries_hawker.sql         Q4 / Q5 正式查询（含敏感性分析 + 覆盖率诊断）
-└── _verify_queries.py            不连数据库时用 Python 复算 Q4/Q5，核对 SQL 注释里的数字
+├── 03_derive_proximity.py        分级 + 指标对比 + resale → block_id 连接（一个脚本产出全部表数据）
+├── 04_validate_distances.py      用 Valhalla / OneMap 交叉验证距离（--engine 二选一）
+├── 05_reroute_onemap.py          用 OneMap 全量重算 63,340 对（可断点续跑，--merge-only 秒级重建）
+├── schema_hawker.sql             建表 DDL + \copy 装载 + 行数校验
+├── queries_hawker.sql            Q4 / Q5 正式查询（含敏感性分析 + 覆盖率诊断）
+└── verify_queries.py             不连数据库时用 Python 复算 Q4/Q5，核对 SQL 注释里的数字
 
 data/raw_data/                    （输入，已存在于仓库）
 ├── hdb.csv                       siteselect_sg 原始文件（12,442 个 block）
@@ -445,7 +443,7 @@ data/hawker_geo/                  （本工作流产出）
 └── osrm_cache.jsonl                路由缓存（提交进仓库，省掉 37 分钟重跑）
 ```
 
-`hdb_hawker_walk.csv`、`hdb_hawker_walk_onemap.csv` 和 `resale_transaction.csv` 没进仓库，见根目录 `.gitignore`：三者都能从已提交的缓存在几秒到一分钟内重算（OneMap 替代表用 `07_reroute_onemap.py --merge-only` 重建）。
+`hdb_hawker_walk.csv`、`hdb_hawker_walk_onemap.csv` 和 `resale_transaction.csv` 没进仓库，见根目录 `.gitignore`：三者都能从已提交的缓存在几秒到一分钟内重算（OneMap 替代表用 `05_reroute_onemap.py --merge-only` 重建）。
 
 ## 7. 复现方式
 
@@ -453,18 +451,17 @@ data/hawker_geo/                  （本工作流产出）
 # 在仓库根目录执行
 python scripts/hawker_geo/01_clean_hawker_geo.py        # 需联网一次，之后走缓存
 python scripts/hawker_geo/02_compute_walk_distance.py   # 有缓存时几秒；无缓存 220 次请求、约 37 分钟
-python scripts/hawker_geo/03_derive_proximity.py
-python scripts/hawker_geo/05_validate_osrm.py           # 可选：Valhalla 复核，约 1 分钟
+python scripts/hawker_geo/03_derive_proximity.py        # 表数据全产出（含 resale 连接，约 10 秒；--skip-resale 可关）
+python scripts/hawker_geo/04_validate_distances.py --engine valhalla --samples 30   # 可选，约 1 分钟
 export ONEMAP_TOKEN='...'                               # OneMap token（72 小时过期）
-python scripts/hawker_geo/06_validate_onemap.py         # 可选：OneMap 复核，300 对约 2 分钟
-python scripts/hawker_geo/07_reroute_onemap.py --merge-only   # 从 onemap_full.jsonl 重建全量对比表，几秒
-python scripts/hawker_geo/08_join_resale.py             # resale → block_id，约 1 分钟
-psql -f scripts/hawker_geo/04_schema_hawker.sql         # 建表 + \copy 装载 + 行数校验
-psql -f scripts/hawker_geo/09_queries_hawker.sql        # Q4 / Q5，注释里带已核实的结果
+python scripts/hawker_geo/04_validate_distances.py --engine onemap --samples 300   # 可选，约 2 分钟
+python scripts/hawker_geo/05_reroute_onemap.py --merge-only   # 从 onemap_full.jsonl 重建全量对比表，几秒
+psql -f scripts/hawker_geo/schema_hawker.sql            # 建表 + \copy 装载 + 行数校验
+psql -f scripts/hawker_geo/queries_hawker.sql           # Q4 / Q5，注释里带已核实的结果
 ```
 
-`04_schema_hawker.sql` 里的 `\copy` 路径是相对仓库根目录写的，所以 `psql` 也要从根目录跑。两张带"多余列"的 CSV（`hawker_centre.csv`、`hdb_hawker_proximity.csv`）先落到 `UNLOGGED` 暂存表再投影进正式表，所以不会因为导出文件多带了 provenance 列而报错。装载后脚本末尾会打印四张表的行数，应分别为 12,442 / 129 / 63,340 / 986,720。
+`schema_hawker.sql` 里的 `\copy` 路径是相对仓库根目录写的，所以 `psql` 也要从根目录跑。两张带"多余列"的 CSV（`hawker_centre.csv`、`hdb_hawker_proximity.csv`）先落到 `UNLOGGED` 暂存表再投影进正式表，所以不会因为导出文件多带了 provenance 列而报错。装载后脚本末尾会打印四张表的行数，应分别为 12,442 / 129 / 63,340 / 986,720。
 
-`09_queries_hawker.sql` 每条查询下面都附了**已核实的结果**，方便组员判断自己那次跑得对不对。这些数字是在没有 PostgreSQL 服务的环境里核对的：DDL 和查询用 `pglast` 离线解析通过（18 + 5 条语句），结果集则由 `_verify_queries.py` 在 CSV 上用纯 Python 独立复算（`PERCENTILE_CONT(0.5)` 的线性插值与 `statistics.median()` 等价）。所以如果你本地跑出来的数不一样，先怀疑装载，再怀疑查询。
+`queries_hawker.sql` 每条查询下面都附了**已核实的结果**，方便组员判断自己那次跑得对不对。这些数字经过三重核对：① 用 `verify_queries.py` 在 CSV 上用纯 Python 独立复算（`PERCENTILE_CONT(0.5)` 的线性插值与 `statistics.median()` 等价）；② 用本地 PostgreSQL 17 实际执行 `schema_hawker.sql` + `queries_hawker.sql`，结果集与注释逐行一致。所以如果你本地跑出来的数不一样，先怀疑装载，再怀疑查询。
 
 `02` 支持断点续跑：每完成一批就写一行 `data/hawker_geo/osrm_cache.jsonl`，重跑会自动跳过已完成的批次（`[cache] 220 groups already computed` → `[osrm] 0 requests to run`，只重新拼装输出，几秒钟）。要改分级阈值直接 `python scripts/hawker_geo/03_derive_proximity.py --class1 400 --class2 800`，**不需要重算距离**。

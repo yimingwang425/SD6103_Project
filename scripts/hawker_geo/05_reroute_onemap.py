@@ -1,76 +1,40 @@
 #!/usr/bin/env python3
 """
-07_reroute_onemap.py
+05_reroute_onemap.py
 ====================
 Re-route **every** materialised block-hawker pair through OneMap (SLA, the
 Singapore national routing service) instead of OSRM, so the proximity relation
 comes from a single, locally authoritative engine.
 
-Why replace rather than patch
------------------------------
-06_validate_onemap.py showed that OSRM and OneMap disagree in a very specific
-way: on long pairs they agree to a few percent, but on short pairs OSRM is
-sometimes 3-5x the straight-line distance (e.g. 206 m apart -> OSRM 1,022 m,
-OneMap 266 m), which looks like OSRM snapping the origin to the wrong side of
-an expressway or canal. Patching only the obviously-broken pairs would leave a
-dataset built from two engines with two different cost models - hard to defend
-and hard to explain. Routing everything through OneMap keeps one engine, one
-definition, one story.
+Why replace rather than patch: 04_validate_distances.py --engine onemap showed
+the two engines disagree in a specific way - on short pairs OSRM is sometimes
+3-5x the straight-line distance (206 m apart -> OSRM 1,022 m, OneMap 266 m),
+which looks like OSRM snapping the origin to the wrong side of an expressway or
+canal. Patching only the broken pairs would leave one dataset built from two
+cost models; re-routing everything keeps one engine, one definition.
 
-Cost
-----
-OneMap has no matrix endpoint, so this is one HTTP request per pair: 63,340
-requests. The run is resumable at any point - every completed pair is appended
-to data/hawker_geo/onemap_full.jsonl, and a re-run skips whatever is there.
+Cost: OneMap has no matrix endpoint, so this is one request per pair (63,340).
+Measured sustained throughput is ~1.4 req/s - the server throttles on request
+rate, not concurrency, so more workers do not help. Budget ~8 hours for the full
+relation; the run is resumable (completed pairs are appended to
+data/hawker_geo/onemap_full.jsonl and skipped on re-run, Ctrl-C is safe).
 
-Throughput was measured against the live endpoint on 2026-10-22 and again over
-a full day of running on 2026-10-23, and both of the earlier guesses in this
-docstring ("10-20 req/s" and then "2.3 req/s sustained") were too optimistic:
-
-    burst, 60 requests   22-35 successful req/s  (the rest are 429)
-    one 700-pair slice    1.1-4.0 successful req/s, median ~1.4
-    sustained             ~1.4 successful req/s
-
-The burst allowance replenishes unevenly, which is why a single 90-second
-sample reads 2.3 and a whole run settles near 1.4. The server throttles on
-*request rate*, not on concurrency, so raising the worker count does not help -
-14 workers measured 2.2 req/s with three times the 429s of 6 workers. Budget
-about 8 hours for the full 63,340-pair relation, not the 1.5-2.5 this file
-originally claimed.
-
-That is why --max-walk-m exists. Re-routing everything buys very little: the
-class boundaries are at 500 m and 1000 m, so once every pair within 1500 m is
-done, no remaining pair can be class 1 or 2, and pulling one of them under
-1000 m would need a >33% shortening - well into the tail of the observed
-OneMap/OSRM ratio. `--max-walk-m 1500` finishes the part that can move an
-answer in about 3.5 hours; the rest is 8.
-
-(What *was* fixable was this script's own pacing: the original limiter widened
-1.25x per 429 but recovered only 0.92x per 40 successes, and the 429 path slept
-3+2*attempt seconds per worker. Together those held the run at 1.1 req/s
-against a server willing to serve more - see RateLimiter for the measured
-before/after.)
-
-Definition caveat
------------------
-OneMap reports the **network** distance between its snapped endpoints. Our
-OSRM column reports **door-to-door** distance (network + the two snapping
-offsets, ~46 m on average). To keep the two comparable the merge step adds the
-OSRM snap offset back onto the OneMap value; the raw OneMap number is preserved
-in onemap_raw_m so the correction can be audited.
+Definition caveat: OneMap reports the network distance between its snapped
+endpoints, while the OSRM column is door-to-door (network + snap offsets,
+~46 m on average). The merge step adds the OSRM snap offset back onto the
+OneMap value; the raw number is preserved in onemap_raw_m for auditing.
 
 Usage
 -----
     export ONEMAP_TOKEN='...'
-    python 07_reroute_onemap.py --workers 4          # fetch + merge
-    python 07_reroute_onemap.py --merge-only         # re-merge from cache
+    python 05_reroute_onemap.py --workers 6            # fetch + merge
+    python 05_reroute_onemap.py --merge-only           # re-merge from cache
 
 Outputs
 -------
-output/onemap_distances.csv   block_id, hawker_id, osrm_m, onemap_raw_m, ...
-output/hdb_hawker_walk.csv    NOT overwritten - the OSRM original is kept
-output/hdb_hawker_walk_onemap.csv   same schema as the OSRM file, plus
-                                    distance_source, for 03_derive_proximity.py
+data/hawker_geo/onemap_distances.csv       block_id, hawker_id, osrm_m, onemap_raw_m, ...
+data/hawker_geo/hdb_hawker_walk_onemap.csv same schema as the OSRM file plus
+                                           distance_source, for 03_derive_proximity.py
 """
 
 from __future__ import annotations
@@ -252,6 +216,7 @@ def main() -> int:
     args = parser.parse_args()
 
     outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
     with Path(args.blocks).open(encoding="utf-8-sig") as handle:
         block_coords = {
             r["block_id"]: (float(r["longitude"]), float(r["latitude"]))
@@ -283,7 +248,7 @@ def main() -> int:
     #       (400-625 m for class 1/2, 800-1250 m for class 2/3). Outside those
     #       windows a 20% distance error cannot change the class.
     #   (b) any pair whose OSRM detour is > 2.5x the straight line - the
-    #       failure mode 06_validate_onemap.py identified.
+    #       failure mode 04_validate_distances.py identified.
     #
     # For the blocks in (a) we re-route all of their pairs up to 1500 m, because
     # correcting one distance can change *which* centre ends up nearest.

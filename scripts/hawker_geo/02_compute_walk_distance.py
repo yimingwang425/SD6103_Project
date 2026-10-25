@@ -2,44 +2,32 @@
 """
 02_compute_walk_distance.py
 ===========================
-Compute **real walking path distances** between every HDB block and every nearby
-hawker centre, using a free OpenStreetMap routing service (OSRM, `foot` profile).
+Compute real **walking path distances** between every HDB block and every nearby
+hawker centre, using OSRM's free OpenStreetMap foot-routing service.
 
 Why not straight-line / Manhattan
 ---------------------------------
-Great-circle distance ignores the street network entirely: it cuts through
-buildings, canals, expressways and MRT tracks. Manhattan distance (|dlat|+|dlon|)
-overestimates on Singapore's diagonal road grid and still ignores barriers.
-OSRM routes along the actual OSM footpath network, so it naturally captures
-footpaths, pedestrian crossings, overhead bridges, covered walkways and the
-detours around blocks. The measured detour factor in Singapore is typically
-1.2-1.6x the straight line, which is exactly the error we care about when the
-proximity thresholds are 500 m / 1000 m.
+Great-circle distance cuts through buildings, canals and expressways; Manhattan
+distance overestimates on Singapore's diagonal grid. OSRM routes along the
+actual footpath network (linkways, overhead bridges, void-deck cuts), and the
+measured detour factor here is 1.2-1.6x the straight line - exactly the error
+that matters at 500 m / 1000 m thresholds.
 
 Algorithm
 ---------
-1. Prefilter with haversine. Since network distance >= great-circle distance,
-   any pair beyond PRUNE_RADIUS_M straight-line cannot be within MAX_WALK_M of
-   walking, so it is safe to discard. This cuts 12442 x 129 = 1.6M pairs down to
-   ~101k candidates.
-2. Batch the origins spatially (blocks in the same grid cell are consecutive),
-   so the destination set per request is the union of the candidates of the whole
-   batch. OSRM's `/table` service returns an S x D matrix in one call, which is
-   far more efficient than one `/route` call per pair.
-3. Add the "snap" offsets OSRM reports for each endpoint (the distance between
-   the raw coordinate and the nearest routable network node). This makes the
-   result door-to-door instead of node-to-node.
-4. Cache every completed batch so the run is resumable.
-
-Free API used
--------------
-    https://routing.openstreetmap.de/routed-foot/table/v1/foot/...
-No API key. Please keep the request rate modest (default 0.2 s between calls).
+1. Prefilter with haversine at 3000 m: network distance >= great-circle, so any
+   pair beyond that straight-line cannot be within 3000 m of walking. Cuts
+   12,442 x 129 = 1.6M pairs down to ~101k candidates.
+2. Batch origins spatially and use OSRM's /table matrix endpoint (one call per
+   batch instead of one /route call per pair).
+3. Add the reported "snap" offsets so the result is door-to-door.
+4. Cache every completed batch (data/hawker_geo/osrm_cache.jsonl) so the run is
+   resumable; a re-run skips finished batches.
 
 Usage
 -----
     python 02_compute_walk_distance.py --limit 300      # smoke test
-    python 02_compute_walk_distance.py                  # full run (~5-8 min)
+    python 02_compute_walk_distance.py                  # full run (~37 min)
 """
 
 from __future__ import annotations
