@@ -1,25 +1,22 @@
 -- queries_hawker.sql - Q4 / Q5 plus the two diagnostics that keep them honest.
 -- Prerequisite: schema_hawker.sql has been loaded.
--- Each query is independent and carries its verified result underneath, so a
--- reviewer can tell whether their own run matches. The numbers were checked
--- against the committed CSVs by an independent Python re-implementation
--- (verify_queries.py) and against a live load of schema_hawker.sql - if your
--- run disagrees, suspect the load, not the query.
+-- Each query carries its verified result underneath, so a reviewer can tell
+-- whether their own run matches. verify_queries.py re-computes the same numbers
+-- from the committed CSVs without a database.
 
 -- Q4. Does walking distance to a hawker centre associate with resale price,
 -- once town and flat type are held fixed? 4 ROOM and 2020-01 onward only,
 -- compared WITHIN town, HAVING n >= 30 per class so a median means something.
 WITH priced AS (
-    SELECT b.town          AS town_code,
+    SELECT t.town           AS town_name,
            c.proximity_class,
            t.resale_price
     FROM   resale_transaction t
     JOIN   hdb_block_proximity_class c ON c.block_id = t.block_id
-    JOIN   hdb_block b                 ON b.block_id = t.block_id
     WHERE  t.flat_type = '4 ROOM'
       AND  t.month    >= '2020-01'
 )
-SELECT n.town_name,
+SELECT pr.town_name,
        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pr.resale_price)
              FILTER (WHERE pr.proximity_class = 1)) AS median_class1,
        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pr.resale_price)
@@ -30,14 +27,13 @@ SELECT n.town_name,
        COUNT(*) FILTER (WHERE pr.proximity_class = 2) AS n2,
        COUNT(*) FILTER (WHERE pr.proximity_class = 3) AS n3
 FROM   priced pr
-JOIN   town_name n ON n.town_code = pr.town_code
-GROUP  BY n.town_name
+GROUP  BY pr.town_name
 HAVING COUNT(*) FILTER (WHERE pr.proximity_class = 1) >= 30
    AND COUNT(*) FILTER (WHERE pr.proximity_class = 2) >= 30
    AND COUNT(*) FILTER (WHERE pr.proximity_class = 3) >= 30
 -- tiebreaker is not cosmetic: BUKIT PANJANG and JURONG WEST both land on a
 -- class-1 median of exactly S$490,000
-ORDER  BY median_class1 DESC, n.town_name;
+ORDER  BY median_class1 DESC, pr.town_name;
 
 -- Verified result: 21 of 26 towns survive. The result is NOT monotone - in
 -- most towns class 2 is cheaper than class 1, but class 3 often ticks back up:
@@ -75,30 +71,28 @@ ORDER  BY median_class1 DESC, n.town_name;
 -- structurally empty or merely too thin to summarise? ("21 of 26" looks like
 -- data loss; it is not.)
 WITH priced AS (
-    SELECT b.town AS town_code, c.proximity_class, t.resale_price
+    SELECT t.town AS town_name, c.proximity_class, t.resale_price
     FROM   resale_transaction t
     JOIN   hdb_block_proximity_class c ON c.block_id = t.block_id
-    JOIN   hdb_block b                 ON b.block_id = t.block_id
     WHERE  t.flat_type = '4 ROOM'
       AND  t.month    >= '2020-01'
 ),
 counts AS (
-    SELECT town_code,
+    SELECT town_name,
            COUNT(*) FILTER (WHERE proximity_class = 1) AS n1,
            COUNT(*) FILTER (WHERE proximity_class = 2) AS n2,
            COUNT(*) FILTER (WHERE proximity_class = 3) AS n3
     FROM   priced
-    GROUP  BY town_code
+    GROUP  BY town_name
 )
-SELECT n.town_name, c.n1, c.n2, c.n3,
+SELECT c.town_name, c.n1, c.n2, c.n3,
        CASE
            WHEN c.n1 = 0 OR c.n2 = 0 OR c.n3 = 0 THEN 'structural: class empty'
            ELSE 'thin: class too small'
        END AS why_excluded
 FROM   counts c
-JOIN   town_name n ON n.town_code = c.town_code
 WHERE  LEAST(c.n1, c.n2, c.n3) < 30
-ORDER  BY LEAST(c.n1, c.n2, c.n3), n.town_name;
+ORDER  BY LEAST(c.n1, c.n2, c.n3), c.town_name;
 
 -- Verified result (5 rows):
 --   town_name        n1    n2    n3   why_excluded

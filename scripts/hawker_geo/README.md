@@ -4,7 +4,7 @@ Data Systems Project · AY26S1 · 负责范围：hawker centre 地理数据 + HD
 
 ## 产出
 
-`schema_hawker.sql` 建 4 张表（`hdb_block`、`hawker_centre`、`hawker_proximity`、`resale_transaction`）加 2 个视图；`queries_hawker.sql` 是 Q4/Q5 查询，每条查询下面附已核实的结果，跑完可以直接对数字。
+`schema_hawker.sql` 建 4 张表（`hdb_block`、`hawker_centre`、`hawker_proximity`、`resale_transaction`）加 1 个视图；`queries_hawker.sql` 是 Q4/Q5 查询，每条查询下面附已核实的结果，跑完可以直接对数字。
 
 ## Proximity 定义
 

@@ -1,9 +1,8 @@
--- schema_hawker.sql - the four hawker-geo tables plus the two views Q4/Q5 need.
--- Load order: hdb_block -> hawker_centre -> hawker_proximity -> resale_transaction,
--- each referencing the previous one. Run from the repository root, then load the
--- CSVs afterwards (see README) - their columns match the tables exactly.
+-- schema_hawker.sql - the four hawker-geo tables plus the view Q4 joins on.
+-- Load order: hdb_block -> hawker_centre -> hawker_proximity -> resale_transaction.
+-- Run from the repository root, then load the CSVs (see README).
 
--- one row per HDB block; block_id is a surrogate key, postal_code is not unique.
+-- one row per HDB block; block_id is a surrogate key (postal_code is not unique).
 -- town holds the HDB code (AMK, CT, ...).
 CREATE TABLE hdb_block (
     block_id    CHAR(6)      PRIMARY KEY,
@@ -16,8 +15,8 @@ CREATE TABLE hdb_block (
     UNIQUE (blk_no, street)
 );
 
--- 129 hawker centres; stall counts come from the official register and stay NULL
--- for the 22 centres opened after its snapshot - unknown, not "no market".
+-- 129 hawker centres; stall counts from the official register, NULL for the 22
+-- centres opened after its snapshot - unknown, not "no market".
 CREATE TABLE hawker_centre (
     hawker_id                CHAR(4)       PRIMARY KEY,
     name                     VARCHAR(120)  NOT NULL UNIQUE,
@@ -45,17 +44,15 @@ CREATE TABLE hawker_proximity (
     walk_duration_s NUMERIC(7,1)          CHECK (walk_duration_s >= 0),
     proximity_class SMALLINT     NOT NULL CHECK (proximity_class BETWEEN 1 AND 3),
     PRIMARY KEY (block_id, hawker_id),
-    -- the class definition lives in the schema, so the table cannot drift away
-    -- from the definition used in the report
     CONSTRAINT proximity_class_matches_distance CHECK (
         (proximity_class = 1 AND walk_distance_m <= 500)
         OR (proximity_class = 2 AND walk_distance_m > 500 AND walk_distance_m <= 1000)
         OR (proximity_class = 3 AND walk_distance_m > 1000))
 );
 
--- the fact table Q4/Q5 aggregate over. block_id is nullable on purpose: 12,938
--- of the 986,720 transactions happened on blocks demolished before the current
--- HDB register snapshot, so no proximity class can exist for them.
+-- the fact table Q4/Q5 aggregate over. block_id is nullable: 12,938 transactions
+-- sit on blocks demolished before the current register snapshot, so no proximity
+-- class can exist for them. town holds the full planning-town name here.
 CREATE TABLE resale_transaction (
     resale_id             CHAR(8)       PRIMARY KEY,
     block_id              CHAR(6)       REFERENCES hdb_block(block_id),
@@ -76,8 +73,6 @@ CREATE TABLE resale_transaction (
                           CHECK (remaining_lease_years BETWEEN 0 AND 99),
     resale_price          INTEGER       NOT NULL CHECK (resale_price > 0),
     CONSTRAINT resale_storey_range_ordered CHECK (storey_min <= storey_max),
-    -- a 99-year lease cannot outlive its term; one year of slack absorbs the
-    -- source's "X years Y months" rounding
     CONSTRAINT resale_lease_consistent CHECK (
         remaining_lease_years
         <= 100 - (CAST(SUBSTRING(month FROM 1 FOR 4) AS SMALLINT) - lease_commence_date))
@@ -94,20 +89,3 @@ SELECT block_id,
        MIN(walk_distance_m) AS nearest_walk_m
 FROM   hawker_proximity
 GROUP  BY block_id;
-
--- town code -> full planning-town name, so hdb_block.town and
--- resale_transaction.town can be joined to the spelled-out form
-CREATE VIEW town_name (town_code, town_name) AS
-VALUES ('AMK', 'ANG MO KIO'),      ('BB', 'BUKIT BATOK'),
-       ('BD', 'BEDOK'),            ('BH', 'BISHAN'),
-       ('BM', 'BUKIT MERAH'),      ('BP', 'BUKIT PANJANG'),
-       ('BT', 'BUKIT TIMAH'),      ('CCK', 'CHOA CHU KANG'),
-       ('CL', 'CLEMENTI'),         ('CT', 'CENTRAL AREA'),
-       ('GL', 'GEYLANG'),          ('HG', 'HOUGANG'),
-       ('JE', 'JURONG EAST'),      ('JW', 'JURONG WEST'),
-       ('KWN', 'KALLANG/WHAMPOA'), ('MP', 'MARINE PARADE'),
-       ('PG', 'PUNGGOL'),          ('PRC', 'PASIR RIS'),
-       ('QT', 'QUEENSTOWN'),       ('SB', 'SEMBAWANG'),
-       ('SGN', 'SERANGOON'),       ('SK', 'SENGKANG'),
-       ('TAP', 'TAMPINES'),        ('TP', 'TOA PAYOH'),
-       ('WL', 'WOODLANDS'),        ('YS', 'YISHUN');
