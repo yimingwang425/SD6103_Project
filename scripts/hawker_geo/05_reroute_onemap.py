@@ -1,40 +1,34 @@
 #!/usr/bin/env python3
 """
-05_reroute_onemap.py
-====================
-Re-route **every** materialised block-hawker pair through OneMap (SLA, the
-Singapore national routing service) instead of OSRM, so the proximity relation
-comes from a single, locally authoritative engine.
+05_reroute_onemap.py - re-route every materialised block-hawker pair through
+OneMap (SLA, the Singapore national routing service) instead of OSRM, and
+write the pair-by-pair comparison table.
 
-Why replace rather than patch: 04_validate_distances.py --engine onemap showed
-the two engines disagree in a specific way - on short pairs OSRM is sometimes
-3-5x the straight-line distance (206 m apart -> OSRM 1,022 m, OneMap 266 m),
-which looks like OSRM snapping the origin to the wrong side of an expressway or
-canal. Patching only the broken pairs would leave one dataset built from two
-cost models; re-routing everything keeps one engine, one definition.
+Why re-route instead of patching: 04_validate_distances.py --engine onemap
+showed the two engines disagree in a specific way - on short pairs OSRM is
+sometimes 3-5x the straight-line distance (206 m apart -> OSRM 1,022 m,
+OneMap 266 m), which looks like OSRM snapping the origin to the wrong side
+of an expressway or canal. Patching only the broken pairs would leave one
+dataset built from two cost models; re-routing everything keeps one engine,
+one definition.
 
-Cost: OneMap has no matrix endpoint, so this is one request per pair (63,340).
-Measured sustained throughput is ~1.4 req/s - the server throttles on request
-rate, not concurrency, so more workers do not help. Budget ~8 hours for the full
-relation; the run is resumable (completed pairs are appended to
-data/hawker_geo/onemap_full.jsonl and skipped on re-run, Ctrl-C is safe).
+Cost: OneMap has no matrix endpoint, so this is one request per pair
+(63,340). The run is resumable: completed pairs are appended to
+data/hawker_geo/onemap_full.jsonl and skipped on re-run; Ctrl-C is safe.
 
 Definition caveat: OneMap reports the network distance between its snapped
 endpoints, while the OSRM column is door-to-door (network + snap offsets,
 ~46 m on average). The merge step adds the OSRM snap offset back onto the
 OneMap value; the raw number is preserved in onemap_raw_m for auditing.
 
-Usage
------
     export ONEMAP_TOKEN='...'
-    python 05_reroute_onemap.py --workers 6            # fetch + merge
-    python 05_reroute_onemap.py --merge-only           # re-merge from cache
+    python 05_reroute_onemap.py                 # fetch + merge (~7-8 h)
+    python 05_reroute_onemap.py --merge-only    # re-merge from cache, seconds
 
-Outputs
--------
-data/hawker_geo/onemap_distances.csv       block_id, hawker_id, osrm_m, onemap_raw_m, ...
-data/hawker_geo/hdb_hawker_walk_onemap.csv same schema as the OSRM file plus
-                                           distance_source, for 03_derive_proximity.py
+Outputs (in data/hawker_geo/):
+    onemap_distances.csv       block_id, hawker_id, osrm_m, onemap_raw_m, onemap_m, status
+    hdb_hawker_walk_onemap.csv same schema as the OSRM file plus distance_source,
+                               a drop-in replacement for 03_derive_proximity.py
 """
 
 from __future__ import annotations
@@ -53,31 +47,35 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parents[2]          # repo root
+OUTDIR = HERE / "data" / "hawker_geo"
+PAIRS_CSV = HERE / "data" / "hawker_geo" / "hdb_hawker_proximity.csv"
+BLOCKS_CSV = HERE / "data" / "hawker_geo" / "hdb_block.csv"
+HAWKER_CSV = HERE / "data" / "hawker_geo" / "hawker_centre.csv"
+WALK_CSV = HERE / "data" / "hawker_geo" / "hdb_hawker_walk.csv"
+CACHE = HERE / "data" / "hawker_geo" / "onemap_full.jsonl"
+
 ROUTE_URL = "https://www.onemap.gov.sg/api/public/routingsvc/route"
 USER_AGENT = "ntu-datasys-project/1.0 (student coursework)"
+INTERVAL = 0.20          # initial seconds between requests, globally (5 req/s,
+                         # near the published 250 calls/min quota)
+MAX_INTERVAL = 1.0       # slowest the pacer may become; 1 req/s floor, so a
+                         # 429 burst can never collapse the run
+WORKERS = 6
 
 
 class RateLimiter:
     """Adaptive global pacer: widens the interval on 429, narrows it on success.
 
-    The tuning here is not arbitrary - it was measured against the live endpoint
-    (2026-10-22). OneMap answers a 60-request burst at 22-35 successful req/s
-    and simply returns 429 for the rest, so the service is nowhere near the
-    bottleneck. What *was* the bottleneck is this class as originally written:
-    it widened by 1.25x on every 429 but only narrowed by 0.92x per 40
-    successes, so any early burst of 429s pushed the interval to the 2.0 s cap
-    and it then needed ~680 successes to walk back down - during which the whole
-    run crawled at ~1.1 req/s instead of the 4-5 req/s the server allows.
-
-    So: a gentler multiplicative increase (1.15x), a much faster recovery
-    (0.97x every 10 successes) and a lower cap (1.0 s, i.e. never slower than
-    1 req/s). The published quota is 250 calls/min = 4.2 req/s, which is what
-    the run should settle at.
+    Tuned against the live endpoint (2026-10-22): OneMap answers a 60-request
+    burst at 22-35 successful req/s and returns 429 for the rest, so a gentle
+    1.15x increase per 429 and a fast recovery (0.97x per 10 successes) settles
+    the run at the published 4.2 req/s instead of crawling at 1.1 req/s.
     """
 
-    def __init__(self, interval: float = 0.20,
+    def __init__(self, interval: float = INTERVAL,
                  min_interval: float = 0.10,
-                 max_interval: float = 1.0) -> None:
+                 max_interval: float = MAX_INTERVAL) -> None:
         self.interval = interval
         self.min_interval = min_interval
         self.max_interval = max_interval
@@ -89,10 +87,7 @@ class RateLimiter:
     def wait(self) -> None:
         with self.lock:
             now = time.monotonic()
-            if now < self.next_at:
-                sleep_for = self.next_at - now
-            else:
-                sleep_for = 0.0
+            sleep_for = max(0.0, self.next_at - now)
             self.next_at = max(now, self.next_at) + self.interval
         if sleep_for:
             time.sleep(sleep_for)
@@ -100,10 +95,8 @@ class RateLimiter:
     def note_success(self) -> None:
         with self.lock:
             self.successes += 1
-            # Recover quickly: 10 successes buy back 3% of the interval, so the
-            # pacer walks down from the cap to the floor in ~200 requests
-            # instead of ~680. A brief 429 burst should cost seconds, not the
-            # throughput of the whole run.
+            # 10 successes buy back 3% of the interval, so the pacer walks down
+            # from the cap to the floor in ~200 requests
             if self.successes % 10 == 0 and self.interval > self.min_interval:
                 self.interval = max(self.min_interval, self.interval * 0.97)
 
@@ -147,13 +140,8 @@ def fetch_one(token: str,
                 return None, "unauthorised"
             if exc.code == 429:
                 limiter.note_throttle()
-                # The old pause was 3 + 2*attempt seconds (3,5,7,9,11). That was
-                # the single biggest throughput killer: with only a handful of
-                # workers, a few 429s parked every thread for seconds at a time
-                # and the run measured 1.1 req/s against a server that happily
-                # serves 5+. Honour Retry-After when it is sent, otherwise back
-                # off briefly - the global pacer is already widening every
-                # worker's slot, so this does not need to be generous as well.
+                # honour Retry-After when it is sent, otherwise back off briefly -
+                # the global pacer is already widening every worker's slot
                 retry_after = exc.headers.get("Retry-After")
                 try:
                     pause = float(retry_after) if retry_after else 0.4 * (2 ** attempt)
@@ -165,10 +153,9 @@ def fetch_one(token: str,
             status = f"error:{exc.code}"
             time.sleep(1 + attempt)
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
-            # Keep the reason. "error:URLError" alone is undiagnosable: it covers
+            # keep the reason: "error:URLError" alone is undiagnosable (it covers
             # DNS failure, connection reset, TLS problems, permission denied and
-            # timeouts alike, and on 2026-10-23 the cache filled with 14,450 of
-            # them without ever saying which one it was.
+            # timeouts alike)
             reason = getattr(exc, "reason", exc)
             status = f"error:{type(exc).__name__}:{str(reason)[:80]}"
             time.sleep(1 + attempt)
@@ -176,133 +163,46 @@ def fetch_one(token: str,
 
 
 def main() -> int:
-    here = Path(__file__).resolve().parents[2]  # repo root
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--pairs", default=str(here / "data" / "hawker_geo" / "hdb_hawker_proximity.csv"))
-    parser.add_argument("--blocks", default=str(here / "data" / "hawker_geo" / "hdb_block.csv"))
-    parser.add_argument("--hawker", default=str(here / "data" / "hawker_geo" / "hawker_centre.csv"))
-    parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
-    parser.add_argument("--cache", default=str(here / "data" / "hawker_geo" / "onemap_full.jsonl"))
-    parser.add_argument("--token-env", default="ONEMAP_TOKEN")
-    parser.add_argument("--workers", type=int, default=6)
-    parser.add_argument("--interval", type=float, default=0.20,
-                        help="initial seconds between requests, globally "
-                             "(0.20 = 5 req/s, near the published 250 calls/min)")
-    parser.add_argument("--max-interval", type=float, default=1.0,
-                        help="slowest the pacer may become; 1.0 = a 1 req/s "
-                             "floor, so a 429 burst can never collapse the run")
+    parser.add_argument("--workers", type=int, default=WORKERS)
     parser.add_argument("--merge-only", action="store_true",
                         help="skip fetching, rebuild the CSVs from the cache")
-    parser.add_argument("--limit", type=int, default=0,
-                        help="stop after N new pairs (0 = all)")
-    parser.add_argument("--max-seconds", type=float, default=0.0,
-                        help="stop after this many seconds (0 = no limit). "
-                             "Useful for driving the run in bounded slices: "
-                             "throughput swings between 1.1 and 4.0 req/s "
-                             "depending on how much burst allowance the "
-                             "endpoint has left, so a fixed pair count either "
-                             "overruns the window or wastes most of it")
-    parser.add_argument("--select", choices=("all", "risk"), default="risk",
-                        help="'all' re-routes every pair (63k requests, ~7-8 h "
-                             "at the measured 2.3 req/s sustained); 'risk' "
-                             "re-routes only the pairs that can change a "
-                             "proximity class")
-    parser.add_argument("--max-walk-m", type=float, default=0.0,
-                        help="only re-route pairs whose OSRM walk is at most "
-                             "this many metres (0 = no limit). Use 1000 to "
-                             "finish every pair that can be class 1 or 2: the "
-                             "remaining class-3 pairs are far by construction "
-                             "and cannot move any query answer")
     args = parser.parse_args()
 
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    with Path(args.blocks).open(encoding="utf-8-sig") as handle:
+    OUTDIR.mkdir(parents=True, exist_ok=True)
+    with BLOCKS_CSV.open(encoding="utf-8-sig") as handle:
         block_coords = {
             r["block_id"]: (float(r["longitude"]), float(r["latitude"]))
             for r in csv.DictReader(handle)
         }
-    with Path(args.hawker).open(encoding="utf-8-sig") as handle:
+    with HAWKER_CSV.open(encoding="utf-8-sig") as handle:
         hawker_coords = {
             r["hawker_id"]: (float(r["longitude"]), float(r["latitude"]))
             for r in csv.DictReader(handle)
         }
 
-    # The proximity file is the authoritative pair list: it is exactly the set
-    # of pairs inside the 3000 m walking horizon, i.e. what the relation needs.
-    with Path(args.pairs).open(encoding="utf-8") as handle:
+    # the proximity file is the authoritative pair list: exactly the set of
+    # pairs inside the 3000 m walking horizon, i.e. what the relation needs
+    with PAIRS_CSV.open(encoding="utf-8") as handle:
         pairs = list(csv.DictReader(handle))
     print(f"[pairs] {len(pairs)} materialised block-hawker pairs")
 
-    # OSRM reference values, used for the comparison and for the snap offset.
-    with (here / "data" / "hawker_geo" / "hdb_hawker_walk.csv").open(encoding="utf-8") as handle:
+    # OSRM reference values, used for the comparison and for the snap offset
+    with WALK_CSV.open(encoding="utf-8") as handle:
         osrm = {(r["block_id"], r["hawker_id"]): r for r in csv.DictReader(handle)}
 
-    # ---------------- which pairs are actually worth re-routing? ----------------
-    # A full re-route is 63,340 requests. The public endpoint sustains roughly
-    # 1.3 req/s once its burst allowance is spent, so that is 12+ hours - too
-    # long to be sensible. But a distance only changes the *answer* if it can
-    # move a class boundary, so we re-route exactly those pairs:
-    #
-    #   (a) blocks whose nearest centre sits within +-25% of a class boundary
-    #       (400-625 m for class 1/2, 800-1250 m for class 2/3). Outside those
-    #       windows a 20% distance error cannot change the class.
-    #   (b) any pair whose OSRM detour is > 2.5x the straight line - the
-    #       failure mode 04_validate_distances.py identified.
-    #
-    # For the blocks in (a) we re-route all of their pairs up to 1500 m, because
-    # correcting one distance can change *which* centre ends up nearest.
-    targets = pairs
-    if args.select == "risk":
-        nearest_path = here / "data" / "hawker_geo" / "hdb_block_nearest.csv"
-        at_risk: set[str] = set()
-        if nearest_path.exists():
-            with nearest_path.open(encoding="utf-8") as handle:
-                for row in csv.DictReader(handle):
-                    distance = float(row["nearest_walk_m"])
-                    if 400 <= distance <= 625 or 800 <= distance <= 1250:
-                        at_risk.add(row["block_id"])
-
-        selected: set[tuple[str, str]] = set()
-        for key, row in osrm.items():
-            straight = float(row["straight_line_m"])
-            walk = float(row["walk_distance_m"])
-            suspicious = straight > 100 and walk / straight > 2.5
-            boundary = key[0] in at_risk and walk <= 1500
-            if suspicious or boundary:
-                selected.add(key)
-
-        targets = [p for p in pairs if (p["block_id"], p["hawker_id"]) in selected]
-        print(f"[select] {len(at_risk)} blocks near a class boundary; "
-              f"{len(targets)} pairs to re-route "
-              f"(of {len(pairs)})")
-
-    # Note this narrows what gets *fetched*, never what gets written out: the
-    # merge below still walks the full `pairs` list, so a partial run leaves the
-    # output CSVs incomplete rather than truncated to the filtered subset.
-    if args.max_walk_m:
-        before = len(targets)
-        targets = [p for p in targets
-                   if float(p["walk_distance_m"]) <= args.max_walk_m]
-        print(f"[filter] {len(targets)} of {before} pairs within "
-              f"{args.max_walk_m:.0f} m walk")
-
-    cache_path = Path(args.cache)
-    cache_path.parent.mkdir(parents=True, exist_ok=True)
+    CACHE.parent.mkdir(parents=True, exist_ok=True)
     # Only a usable distance counts as "done". A failed request must stay in the
     # todo list, otherwise the cache quietly turns a transient network outage
     # into permanent missing data: the pair is written once with a null
     # distance, is then treated as already fetched on every later run, and is
-    # never retried. That is exactly what happened on 2026-10-23 - 14,450
-    # consecutive URLErrors were cached as if they were results.
-    #
-    # "no_route" is different: OneMap answered, and the answer is that no
-    # walking route exists, so re-asking cannot help.
+    # never retried. "no_route" is different: OneMap answered, and the answer
+    # is that no walking route exists, so re-asking cannot help.
     TERMINAL = {"ok", "no_route"}
     done: dict[tuple[str, str], dict] = {}
     skipped = 0
-    if cache_path.exists():
-        with cache_path.open(encoding="utf-8") as handle:
+    if CACHE.exists():
+        with CACHE.open(encoding="utf-8") as handle:
             for line in handle:
                 line = line.strip()
                 if not line:
@@ -322,31 +222,21 @@ def main() -> int:
               + (f", {skipped} failed records ignored (will retry)" if skipped else ""))
 
     if not args.merge_only:
-        token = os.environ.get(args.token_env, "").strip()
+        token = os.environ.get("ONEMAP_TOKEN", "").strip()
         if not token:
-            print(f"error: set {args.token_env} to a OneMap API token.")
+            print("error: set ONEMAP_TOKEN to a OneMap API token.")
             return 2
 
-        todo = [p for p in targets if (p["block_id"], p["hawker_id"]) not in done]
-        if args.limit:
-            todo = todo[:args.limit]
+        todo = [p for p in pairs if (p["block_id"], p["hawker_id"]) not in done]
         print(f"[fetch] {len(todo)} to go with {args.workers} workers")
 
-        limiter = RateLimiter(interval=args.interval,
-                              max_interval=args.max_interval)
+        limiter = RateLimiter()
         lock = threading.Lock()
         started = time.monotonic()
-        deadline = started + args.max_seconds if args.max_seconds else None
         counts = {"ok": 0, "no_route": 0, "other": 0}
         streak = {"fails": 0}
 
         def work(row: dict) -> None:
-            # Past the time budget, return without fetching. pool.map still walks
-            # the remaining rows, but each is a no-op, so the slice ends close to
-            # its deadline instead of mid-request. Nothing is lost: those pairs
-            # simply stay in the todo list for the next slice.
-            if deadline is not None and time.monotonic() > deadline:
-                return
             block_id, hawker_id = row["block_id"], row["hawker_id"]
             if block_id not in block_coords or hawker_id not in hawker_coords:
                 return
@@ -356,17 +246,16 @@ def main() -> int:
             record = {"block_id": block_id, "hawker_id": hawker_id,
                       "onemap_raw_m": distance, "status": status}
             with lock:
-                with cache_path.open("a", encoding="utf-8") as handle:
+                with CACHE.open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(record) + "\n")
                 done[(block_id, hawker_id)] = record
                 counts["ok" if status == "ok" else
                        ("no_route" if status == "no_route" else "other")] += 1
-                # Circuit breaker. A run that has lost its network looks exactly
+                # circuit breaker: a run that has lost its network looks exactly
                 # like a slow run from the outside - every pair still produces a
-                # cache line - so without this the process will happily spend
-                # twelve hours writing nulls, which is what it did on
-                # 2026-10-23. Sixty consecutive failures across all workers is
-                # far outside anything a healthy endpoint produces.
+                # cache line - so without this the process would happily spend
+                # hours writing nulls. Sixty consecutive failures across all
+                # workers is far outside anything a healthy endpoint produces.
                 if status == "ok":
                     streak["fails"] = 0
                 else:
@@ -395,7 +284,7 @@ def main() -> int:
         print(f"[fetch] done: ok={counts['ok']} no_route={counts['no_route']} "
               f"other={counts['other']} throttled={limiter.throttled}")
 
-    # ---------------- write the comparison table ---------------- #
+    # write the comparison table
     rows = []
     for row in pairs:
         key = (row["block_id"], row["hawker_id"])
@@ -419,17 +308,17 @@ def main() -> int:
         print("nothing in the cache yet - nothing to merge")
         return 1
 
-    dist_path = outdir / "onemap_distances.csv"
+    dist_path = OUTDIR / "onemap_distances.csv"
     with dist_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
 
-    # ---------------- build a drop-in replacement for 03 ---------------- #
-    # Same columns as hdb_hawker_walk.csv so 03_derive_proximity.py can consume
-    # it unchanged, plus distance_source so every row says where it came from.
+    # build a drop-in replacement for 03: same columns as hdb_hawker_walk.csv
+    # plus distance_source. Iterate the FULL relation - pairs we did not
+    # re-route keep the OSRM value and say so in distance_source.
     usable = 0
-    walk_path = outdir / "hdb_hawker_walk_onemap.csv"
+    walk_path = OUTDIR / "hdb_hawker_walk_onemap.csv"
     with walk_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow([
@@ -438,10 +327,6 @@ def main() -> int:
             "straight_line_m", "snap_offset_m", "detour_ratio",
             "distance_source",
         ])
-        # Iterate the FULL relation, not just the re-routed subset: the point
-        # of this file is to be a drop-in replacement for hdb_hawker_walk.csv,
-        # so every pair must be present. Pairs we did not re-route keep the
-        # OSRM value and say so in distance_source.
         for key, reference in osrm.items():
             record = done.get(key)
             onemap_m = None
@@ -466,7 +351,7 @@ def main() -> int:
                 source,
             ])
 
-    # ---------------- report ---------------- #
+    # report
     ok = [r for r in rows if r["status"] == "ok" and r["osrm_m"] != ""]
     print("\n" + "=" * 66)
     print("ONEMAP RE-ROUTING SUMMARY")

@@ -1,33 +1,18 @@
 #!/usr/bin/env python3
 """
-02_compute_walk_distance.py
-===========================
-Compute real **walking path distances** between every HDB block and every nearby
-hawker centre, using OSRM's free OpenStreetMap foot-routing service.
+02_compute_walk_distance.py - compute real walking path distances between
+every HDB block and every nearby hawker centre, using OSRM's free
+OpenStreetMap foot-routing service.
 
-Why not straight-line / Manhattan
----------------------------------
-Great-circle distance cuts through buildings, canals and expressways; Manhattan
-distance overestimates on Singapore's diagonal grid. OSRM routes along the
-actual footpath network (linkways, overhead bridges, void-deck cuts), and the
-measured detour factor here is 1.2-1.6x the straight line - exactly the error
-that matters at 500 m / 1000 m thresholds.
+Why not straight-line: great-circle distance cuts through buildings, canals
+and expressways; the measured detour factor here is 1.2-1.6x the straight
+line - exactly the error that matters at the 500 m / 1000 m thresholds.
 
-Algorithm
----------
-1. Prefilter with haversine at 3000 m: network distance >= great-circle, so any
-   pair beyond that straight-line cannot be within 3000 m of walking. Cuts
-   12,442 x 129 = 1.6M pairs down to ~101k candidates.
-2. Batch origins spatially and use OSRM's /table matrix endpoint (one call per
-   batch instead of one /route call per pair).
-3. Add the reported "snap" offsets so the result is door-to-door.
-4. Cache every completed batch (data/hawker_geo/osrm_cache.jsonl) so the run is
-   resumable; a re-run skips finished batches.
-
-Usage
------
     python 02_compute_walk_distance.py --limit 300      # smoke test
     python 02_compute_walk_distance.py                  # full run (~37 min)
+
+The run is resumable: every completed batch is appended to
+data/hawker_geo/osrm_cache.jsonl and skipped on re-run.
 """
 
 from __future__ import annotations
@@ -45,24 +30,25 @@ import urllib.request
 from collections import defaultdict
 from pathlib import Path
 
+HERE = Path(__file__).resolve().parents[2]          # repo root
+HDB_CSV = HERE / "data" / "raw_data" / "hdb.csv"
+HAWKER_CSV = HERE / "data" / "hawker_geo" / "hawker_centre.csv"
+OUTDIR = HERE / "data" / "hawker_geo"
+CACHE = HERE / "data" / "hawker_geo" / "osrm_cache.jsonl"
+
 OSRM_TABLE = "https://routing.openstreetmap.de/routed-foot/table/v1/foot/"
 USER_AGENT = "ntu-datasys-project/1.0 (student coursework)"
 
 MAX_COORDS = 100        # server-side limit per /table request
+BATCH = 75              # max origins per request
+DELAY = 2.0             # seconds between requests; the demo server asks for <= 1 req/s
 PRUNE_RADIUS_M = 3000   # straight-line prefilter
 # Storage horizon. Because network distance >= great-circle distance, pruning at
-# PRUNE_RADIUS_M great-circle metres guarantees that *every* pair within
-# PRUNE_RADIUS_M metres of walking has been routed. Setting the horizon to the
-# same number therefore gives a provably complete neighbourhood: we hold every
-# hawker centre within a 3 km walk, and nothing further. Raising it above
-# PRUNE_RADIUS_M would produce a ragged, incomplete set.
+# PRUNE_RADIUS_M great-circle metres guarantees every pair within PRUNE_RADIUS_M
+# metres of walking has been routed: the neighbourhood is provably complete.
 MAX_WALK_M = 3000
 EARTH_R = 6371008.8
 
-
-# --------------------------------------------------------------------------- #
-# Geometry
-# --------------------------------------------------------------------------- #
 
 def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     """Great-circle distance in metres."""
@@ -73,15 +59,10 @@ def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     return 2 * EARTH_R * math.asin(math.sqrt(a))
 
 
-# --------------------------------------------------------------------------- #
-# OSRM client
-# --------------------------------------------------------------------------- #
-
 def osrm_table(sources: list[tuple[float, float]],
                destinations: list[tuple[float, float]],
                retries: int = 5) -> dict:
-    """
-    Call OSRM /table with an explicit S x D matrix.
+    """Call OSRM /table with an explicit S x D matrix.
 
     Returns {"distances": [[...]], "durations": [[...]],
              "snap_src": [...], "snap_dst": [...]}
@@ -113,9 +94,8 @@ def osrm_table(sources: list[tuple[float, float]],
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError,
                 RuntimeError, json.JSONDecodeError) as exc:
             last_error = exc
-            # 429 means we hit the demo server's rate limit. Back off hard and
-            # do not count it as a real failure, so a busy moment does not
-            # abort a long run.
+            # 429 means the demo server's rate limit: back off hard and do not
+            # count it as a real failure, so a busy moment does not abort a long run
             is_rate_limit = (isinstance(exc, urllib.error.HTTPError)
                              and exc.code == 429)
             wait = max(10.0, 2 ** attempt) if is_rate_limit else 2 ** attempt
@@ -125,34 +105,17 @@ def osrm_table(sources: list[tuple[float, float]],
     raise RuntimeError(f"OSRM table failed after {retries} attempts: {last_error}")
 
 
-# --------------------------------------------------------------------------- #
-# Main
-# --------------------------------------------------------------------------- #
-
 def main() -> int:
-    here = Path(__file__).resolve().parents[2]  # repo root (scripts/hawker_geo -> scripts -> .)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--hdb", default=str(here / "data" / "raw_data" / "hdb.csv"),
-                        help="HDB block geolocation csv (from siteselect_sg)")
-    parser.add_argument("--hawker", default=str(here / "data" / "hawker_geo" / "hawker_centre.csv"))
-    parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
     parser.add_argument("--limit", type=int, default=0,
                         help="only process the first N blocks (smoke test)")
-    parser.add_argument("--delay", type=float, default=2.0,
-                        help="seconds between requests (the demo server asks "
-                             "for at most ~1 request/second; do not lower this)")
-    parser.add_argument("--batch", type=int, default=75,
-                        help="max origins per request")
     args = parser.parse_args()
 
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-    cache_path = here / "data" / "hawker_geo" / "osrm_cache.jsonl"
+    OUTDIR.mkdir(parents=True, exist_ok=True)
 
-    # ---------------- load inputs ---------------- #
-    with Path(args.hdb).open(encoding="utf-8-sig") as handle:
+    with HDB_CSV.open(encoding="utf-8-sig") as handle:
         hdb_rows = list(csv.DictReader(handle))
-    with Path(args.hawker).open(encoding="utf-8-sig") as handle:
+    with HAWKER_CSV.open(encoding="utf-8-sig") as handle:
         hawker_rows = list(csv.DictReader(handle))
     print(f"[load] {len(hdb_rows)} HDB blocks, {len(hawker_rows)} hawker centres")
 
@@ -163,8 +126,8 @@ def main() -> int:
         except (TypeError, ValueError):
             continue
         # 76 rows in the source carry the literal string 'NIL' instead of a
-        # postal code. It is not a valid code, so it must become NULL rather
-        # than reach the CHAR(6) CHECK constraint.
+        # postal code; it is not a valid code, so it must become NULL rather
+        # than reach the CHAR(6) CHECK constraint
         postal = row["postal"].strip()
         if not (len(postal) == 6 and postal.isdigit()):
             postal = ""
@@ -187,9 +150,9 @@ def main() -> int:
         blocks = blocks[:args.limit]
         print(f"[load] --limit active, {len(blocks)} blocks")
 
-    # ---------------- 1. haversine prefilter ---------------- #
+    # haversine prefilter: network distance >= great-circle, so any pair beyond
+    # PRUNE_RADIUS_M straight-line cannot be within PRUNE_RADIUS_M of walking
     candidates: list[list[int]] = []
-    # straight[block_index][hawker_index] = great-circle distance in metres
     straight: list[dict[int, float]] = []
     for block in blocks:
         row_candidates = []
@@ -207,7 +170,7 @@ def main() -> int:
           f"(mean {total_candidates / max(len(blocks), 1):.2f} per block, "
           f"{sum(1 for c in candidates if not c)} blocks with none)")
 
-    # ---------------- 2. spatial batching ---------------- #
+    # spatial batching: group nearby blocks so one /table call covers many pairs
     CELL = 0.02  # ~2.2 km, keeps a batch spatially tight
     cells: dict[tuple[int, int], list[int]] = defaultdict(list)
     for block_index, block in enumerate(blocks):
@@ -217,10 +180,10 @@ def main() -> int:
     for cell_key in sorted(cells):
         indices = sorted(cells[cell_key],
                          key=lambda i: (blocks[i]["lat"], blocks[i]["lon"]))
-        for start in range(0, len(indices), args.batch):
-            groups.append(indices[start:start + args.batch])
+        for start in range(0, len(indices), BATCH):
+            groups.append(indices[start:start + BATCH])
 
-    # Split any group whose destination union would blow the 100-coord limit.
+    # split any group whose destination union would blow the 100-coord limit
     def split_group(group: list[int]) -> list[list[int]]:
         union = set()
         for i in group:
@@ -234,10 +197,10 @@ def main() -> int:
     print(f"[batch] {len(groups)} requests planned "
           f"(max {max(len(g) for g in groups)} origins each)")
 
-    # ---------------- 3. resumable cache ---------------- #
+    # resumable cache
     done_groups: set[str] = set()
-    if cache_path.exists():
-        with cache_path.open(encoding="utf-8") as handle:
+    if CACHE.exists():
+        with CACHE.open(encoding="utf-8") as handle:
             for line in handle:
                 try:
                     done_groups.add(json.loads(line)["group_key"])
@@ -249,7 +212,6 @@ def main() -> int:
         raw = ",".join(blocks[i]["block_id"] for i in group)
         return hashlib.sha1(raw.encode()).hexdigest()[:16]
 
-    # ---------------- 4. routing ---------------- #
     pending = [g for g in groups if group_key(g) not in done_groups]
     print(f"[osrm] {len(pending)} requests to run")
 
@@ -274,6 +236,7 @@ def main() -> int:
                             if result.get("durations") else None)
                 snap_src = result["snap_src"][row_offset] if result["snap_src"] else 0.0
                 snap_dst = result["snap_dst"][col_offset] if result["snap_dst"] else 0.0
+                # add the snap offsets back so the result is door-to-door
                 rows.append([
                     blocks[block_index]["block_id"],
                     hawkers[hawker_index]["hawker_id"],
@@ -283,7 +246,7 @@ def main() -> int:
                     round(snap_src + snap_dst, 1),
                 ])
 
-        with cache_path.open("a", encoding="utf-8") as handle:
+        with CACHE.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps({
                 "group_key": group_key(group),
                 "rows": rows,
@@ -295,11 +258,11 @@ def main() -> int:
             eta = (len(pending) - number) / rate if rate else 0
             print(f"  [{number}/{len(pending)}] {rate:.2f} req/s, "
                   f"ETA {eta / 60:.1f} min")
-        time.sleep(args.delay)
+        time.sleep(DELAY)
 
-    # ---------------- 5. assemble output ---------------- #
+    # assemble the output from the cache
     records: list[list] = []
-    with cache_path.open(encoding="utf-8") as handle:
+    with CACHE.open(encoding="utf-8") as handle:
         for line in handle:
             try:
                 records.extend(json.loads(line)["rows"])
@@ -313,8 +276,8 @@ def main() -> int:
         if walk_m <= MAX_WALK_M:
             kept[(block_id, hawker_id)] = row
 
-    # Coverage rule: every block must end up with at least one row, otherwise
-    # it cannot be assigned a proximity class and Q4 would silently drop it.
+    # coverage rule: every block must end up with at least one row, otherwise it
+    # cannot be assigned a proximity class and Q4 would silently drop it.
     # 514 blocks - almost all in the newer towns (Punggol, Sengkang) where the
     # nearest hawker centre really is more than 2.5 km away - only qualify
     # through this rule. Their class is 3 either way, so this adds no
@@ -334,9 +297,9 @@ def main() -> int:
     block_lookup = {b["block_id"]: b for b in blocks}
     hawker_lookup = {h["hawker_id"]: h for h in hawkers}
 
-    # The block table the proximity relation references. Exported here because
-    # hdb.csv is already loaded and normalised at this point.
-    block_path = outdir / "hdb_block.csv"
+    # the block table the proximity relation references; exported here because
+    # hdb.csv is already loaded and normalised at this point
+    block_path = OUTDIR / "hdb_block.csv"
     with block_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(["block_id", "blk_no", "street", "postal_code",
@@ -348,7 +311,7 @@ def main() -> int:
                 round(block["lat"], 6), round(block["lon"], 6),
             ])
 
-    output_path = outdir / "hdb_hawker_walk.csv"
+    output_path = OUTDIR / "hdb_hawker_walk.csv"
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow([
@@ -366,7 +329,7 @@ def main() -> int:
                 round(walk_m / straight_m, 3) if straight_m else "",
             ])
 
-    # ---------------- 6. summary ---------------- #
+    # summary
     walk_values = [float(r[2]) for r in kept.values()]
     ratios = [float(r[2]) / float(r[4]) for r in kept.values() if float(r[4]) > 0]
     covered_blocks = {r[0] for r in kept.values()}
