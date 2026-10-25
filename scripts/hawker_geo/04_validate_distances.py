@@ -60,9 +60,10 @@ def load_context(args):
             for i, r in enumerate(csv.DictReader(fh))
         }
     with HAWKER_CSV.open(encoding="utf-8-sig") as fh:
+        # keyed by the legacy Hxxx id: that is what the routing pipeline speaks
         hawker_coords = {
-            r["hawker_id"]: (float(r["longitude"]), float(r["latitude"]))
-            for r in csv.DictReader(fh)
+            f"H{index + 1:03d}": (float(r["longitude"]), float(r["latitude"]))
+            for index, r in enumerate(csv.DictReader(fh))
         }
     with WALK_CSV.open(encoding="utf-8") as fh:
         pairs = list(csv.DictReader(fh))

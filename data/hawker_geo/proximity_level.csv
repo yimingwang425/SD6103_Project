@@ -1,0 +1,4 @@
+level_id,category,distance_min_m,distance_max_m
+1,NEAR,0,500
+2,MID,500,1000
+3,FAR,1000,

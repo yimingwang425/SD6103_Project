@@ -12,7 +12,9 @@ line - exactly the error that matters at the 500 m / 1000 m thresholds.
     python 02_compute_walk_distance.py                  # full run (~37 min)
 
 The run is resumable: every completed batch is appended to
-data/hawker_geo/osrm_cache.jsonl and skipped on re-run.
+data/hawker_geo/osrm_cache.jsonl and skipped on re-run. The cache keys pairs
+by the legacy Bxxxxx/Hxxx ids, so those stay in use inside this script and in
+hdb_hawker_walk.csv; only the DB-facing hdb_block.csv/town.csv carry INT ids.
 """
 
 from __future__ import annotations
@@ -48,6 +50,22 @@ PRUNE_RADIUS_M = 3000   # straight-line prefilter
 # metres of walking has been routed: the neighbourhood is provably complete.
 MAX_WALK_M = 3000
 EARTH_R = 6371008.8
+
+# the HDB property file uses 3-letter contract-town codes; ids follow the
+# team's hdb_town_YM.csv (TownID 1-26, alphabetical by town name)
+TOWN_CODE_TO_NAME = {
+    "AMK": "ANG MO KIO", "BB": "BUKIT BATOK", "BD": "BEDOK",
+    "BH": "BISHAN", "BM": "BUKIT MERAH", "BP": "BUKIT PANJANG",
+    "BT": "BUKIT TIMAH", "CCK": "CHOA CHU KANG", "CL": "CLEMENTI",
+    "CT": "CENTRAL AREA", "GL": "GEYLANG", "HG": "HOUGANG",
+    "JE": "JURONG EAST", "JW": "JURONG WEST", "KWN": "KALLANG/WHAMPOA",
+    "MP": "MARINE PARADE", "PG": "PUNGGOL", "PRC": "PASIR RIS",
+    "QT": "QUEENSTOWN", "SB": "SEMBAWANG", "SGN": "SERANGOON",
+    "SK": "SENGKANG", "TAP": "TAMPINES", "TP": "TOA PAYOH",
+    "WL": "WOODLANDS", "YS": "YISHUN",
+}
+TOWN_ID_BY_NAME = {name: index + 1 for index, name
+                   in enumerate(sorted(TOWN_CODE_TO_NAME.values()))}
 
 
 def haversine_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
@@ -127,23 +145,35 @@ def main() -> int:
             continue
         # 76 rows in the source carry the literal string 'NIL' instead of a
         # postal code; it is not a valid code, so it must become NULL rather
-        # than reach the CHAR(6) CHECK constraint
+        # than reach the VARCHAR(8) column
         postal = row["postal"].strip()
         if not (len(postal) == 6 and postal.isdigit()):
             postal = ""
+        try:
+            year = int(row["year_completed"])
+        except (TypeError, ValueError):
+            year = 0
+        town_name = TOWN_CODE_TO_NAME.get(row.get("bldg_contract_town", "").strip())
+        if town_name is None:
+            print(f"[load][warn] unknown town code "
+                  f"{row.get('bldg_contract_town')!r} at row {index + 1}")
+            continue
         blocks.append({
-            "block_id": f"B{index + 1:05d}",
+            "block_id": f"B{index + 1:05d}",     # legacy id: cache compatibility
+            "db_id": index + 1,                  # INT id used by the DB CSVs
             "blk_no": row["blk_no"].strip(),
             "street": row["street"].strip(),
             "postal": postal,
-            "town": row.get("bldg_contract_town", "").strip(),
+            "town_id": TOWN_ID_BY_NAME[town_name],
+            "year": year,
             "lat": lat, "lon": lon,
         })
     hawkers = [{
-        "hawker_id": row["hawker_id"],
+        "hawker_id": f"H{index + 1:03d}",       # legacy id: cache compatibility
+        "db_id": index + 1,                     # INT id used by the DB CSVs
         "lat": float(row["latitude"]),
         "lon": float(row["longitude"]),
-    } for row in hawker_rows]
+    } for index, row in enumerate(hawker_rows)]
     print(f"[load] usable: {len(blocks)} blocks, {len(hawkers)} hawkers")
 
     if args.limit:
@@ -277,10 +307,10 @@ def main() -> int:
             kept[(block_id, hawker_id)] = row
 
     # coverage rule: every block must end up with at least one row, otherwise it
-    # cannot be assigned a proximity class and Q4 would silently drop it.
-    # 514 blocks - almost all in the newer towns (Punggol, Sengkang) where the
-    # nearest hawker centre really is more than 2.5 km away - only qualify
-    # through this rule. Their class is 3 either way, so this adds no
+    # cannot be assigned a proximity level and Q4 would silently drop it.
+    # 103 blocks - almost all in the newer towns (Punggol, Sengkang) where the
+    # nearest hawker centre really is more than 3 km away - only qualify
+    # through this rule. Their level is 3 either way, so this adds no
     # information beyond making the relation total.
     nearest: dict[str, list] = {}
     for row in records:
@@ -297,18 +327,25 @@ def main() -> int:
     block_lookup = {b["block_id"]: b for b in blocks}
     hawker_lookup = {h["hawker_id"]: h for h in hawkers}
 
-    # the block table the proximity relation references; exported here because
+    # TOWN and HDB_BLOCK as the schema loads them; exported here because
     # hdb.csv is already loaded and normalised at this point
+    town_path = OUTDIR / "town.csv"
+    with town_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["town_id", "town_name"])
+        for name in sorted(TOWN_CODE_TO_NAME.values()):
+            writer.writerow([TOWN_ID_BY_NAME[name], name])
+
     block_path = OUTDIR / "hdb_block.csv"
     with block_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["block_id", "blk_no", "street", "postal_code",
-                         "town", "latitude", "longitude"])
+        writer.writerow(["block_id", "town_id", "block_number", "street",
+                         "lease_commence_year", "latitude", "longitude", "postal"])
         for block in blocks:
             writer.writerow([
-                block["block_id"], block["blk_no"], block["street"],
-                block["postal"], block["town"],
-                round(block["lat"], 6), round(block["lon"], 6),
+                block["db_id"], block["town_id"], block["blk_no"], block["street"],
+                block["year"], round(block["lat"], 6), round(block["lon"], 6),
+                block["postal"],
             ])
 
     output_path = OUTDIR / "hdb_hawker_walk.csv"
@@ -324,7 +361,7 @@ def main() -> int:
             walk_m, straight_m = float(row[2]), float(row[4])
             writer.writerow([
                 block_id, block["blk_no"], block["street"], block["postal"],
-                block["town"], hawker_id,
+                block["town_id"], hawker_id,
                 row[2], row[3], row[4], row[5],
                 round(walk_m / straight_m, 3) if straight_m else "",
             ])
@@ -334,9 +371,6 @@ def main() -> int:
     ratios = [float(r[2]) / float(r[4]) for r in kept.values() if float(r[4]) > 0]
     covered_blocks = {r[0] for r in kept.values()}
 
-    print("\n" + "=" * 66)
-    print("WALKING DISTANCE SUMMARY")
-    print("=" * 66)
     print(f"pairs routed (candidates)        : {len(records)}")
     print(f"pairs within {MAX_WALK_M:.0f} m walk        : {len(kept) - added_for_coverage}")
     print(f"pairs added for coverage         : {added_for_coverage} "
@@ -352,7 +386,9 @@ def main() -> int:
               f"{statistics.median(ratios):.3f} / {statistics.mean(ratios):.3f}")
         print(f"pairs where walk > 1.5x straight : "
               f"{sum(1 for r in ratios if r > 1.5)} ({100 * sum(1 for r in ratios if r > 1.5) / len(ratios):.1f}%)")
-    print(f"\nwrote {output_path}")
+    print(f"\nwrote {town_path}")
+    print(f"wrote {block_path}")
+    print(f"wrote {output_path}")
     return 0
 
 

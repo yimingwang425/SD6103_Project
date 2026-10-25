@@ -1,4 +1,4 @@
-block_id,nearest_by_walk,walk_m,class_by_walk,nearest_by_straight,straight_m,class_by_straight,nearest_by_manhattan,manhattan_m,class_by_manhattan
+block_id,nearest_by_walk,walk_m,level_by_walk,nearest_by_straight,straight_m,level_by_straight,nearest_by_manhattan,manhattan_m,level_by_manhattan
 B00001,H027,1068.2,3,H027,667.7,2,H027,669.3,2
 B00002,H059,653.4,2,H059,198.7,1,H059,233.9,1
 B00003,H041,465.7,1,H041,230.7,1,H041,318.5,1

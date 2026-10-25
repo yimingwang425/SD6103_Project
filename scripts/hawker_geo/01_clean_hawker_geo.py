@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
 01_clean_hawker_geo.py - clean the raw hawker_geo.csv export into the
-DB-ready hawker_centre table: coordinate validation, text normalisation,
-postal-code extraction, and a join to the official data.gov.sg register for
+DB-ready HAWKER_CENTRE table, joining the official data.gov.sg register for
 the stall counts Q5 needs.
 
 The geo file (129 rows) is authoritative for locations, the official register
@@ -89,6 +88,13 @@ def extract_postal(address: str) -> str:
     return ""
 
 
+def split_street(address: str) -> str:
+    """'31, Commonwealth Crescent, Singapore 149644' -> '31, Commonwealth Crescent'."""
+    text = re.sub(r"\s*,?\s*S\(\d{6}\)\s*$", "", address)
+    text = re.sub(r"\s*,?\s*Singapore\s+\d{6}\s*$", "", text)
+    return text.strip(" ,")
+
+
 def name_tokens(name: str) -> set[str]:
     """Token set used for fuzzy comparison."""
     lowered = name.lower().replace("&", " and ")
@@ -124,9 +130,7 @@ def fetch_official(cache_path: Path) -> list[dict]:
         payload = json.loads(cache_path.read_text(encoding="utf-8"))
     else:
         print(f"[official] downloading {OFFICIAL_RESOURCE_ID} ...")
-        request = urllib.request.Request(
-            OFFICIAL_API, headers={"User-Agent": "ntu-datasys-project/1.0"}
-        )
+        request = urllib.request.Request(OFFICIAL_API, headers={"User-Agent": "ntu-datasys-project/1.0"})
         with urllib.request.urlopen(request, timeout=60) as response:
             payload = json.load(response)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -263,18 +267,22 @@ def main() -> int:
             no_of_mkt_produce_stalls=record["no_of_mkt_produce_stalls"],
         )
 
-    # write the DB-ready table: exactly the hawker_centre columns, in order
+    # write the DB-ready table: exactly the HAWKER_CENTRE columns, in order.
+    # Row order defines hawker_id, and 02/03 rely on it matching the Hxxx
+    # numbering inside the routing caches.
     fieldnames = [
-        "hawker_id", "name", "alias", "address", "postal_code",
-        "latitude", "longitude", "no_of_stalls", "no_of_cooked_food_stalls",
-        "no_of_mkt_produce_stalls",
+        "hawker_id", "hawker_name", "street", "latitude", "longitude", "postal",
+        "no_of_mkt_produce_stalls", "no_of_cooked_food_stalls",
     ]
     output_path = OUTDIR / "hawker_centre.csv"
     with output_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         for index, row in enumerate(geo_rows, start=1):
-            row["hawker_id"] = f"H{index:03d}"
+            row["hawker_id"] = index
+            row["hawker_name"] = row["name"]
+            row["street"] = split_street(row["address"])
+            row["postal"] = row["postal_code"]
             writer.writerow(row)
 
     # audit report (keeps the provenance columns the table does not carry)
@@ -306,17 +314,11 @@ def main() -> int:
     with_market = sum(1 for r in geo_rows
                       if known_stalls(r) and int(r["no_of_mkt_produce_stalls"]) > 0)
 
-    print("\n" + "=" * 66)
-    print("HAWKER GEO CLEANING SUMMARY")
-    print("=" * 66)
-    print(f"rows in raw file                : {len(raw_rows)}")
     print(f"rows in cleaned table           : {total}")
     print(f"rows with a postal code         : {sum(1 for r in geo_rows if r['postal_code'])}")
-    print(f"rows with a missing address     : {sum(1 for r in geo_rows if not r['address'])}")
     print(f"matched to official dataset     : {total - by_method.get('none', 0)}")
     for method, count in sorted(by_method.items()):
         print(f"    via {method:<22}: {count}")
-    print(f"official centres not in geo file: {len(official) - len(claimed)}")
     print(f"centres with fresh market stalls: {with_market} "
           f"(of {sum(1 for r in geo_rows if known_stalls(r))} with known data)")
     if errors:
