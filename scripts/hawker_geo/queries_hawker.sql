@@ -1,18 +1,15 @@
 -- ===========================================================================
--- 09_queries_hawker.sql
--- Data Systems Project - the two queries the hawker-geo workstream answers.
+-- queries_hawker.sql - the two questions the hawker-geo workstream answers,
+-- plus the two diagnostics that keep them honest.
 --
--- Prerequisites: 04_schema_hawker.sql has been loaded, so these exist:
---     hdb_block, hawker_centre, hawker_proximity, resale_transaction
---     hdb_block_proximity_class   (block -> its best proximity class)
---     town_name                   (26-row code -> full name lookup)
+-- Prerequisites: schema_hawker.sql has been loaded (hdb_block, hawker_centre,
+-- hawker_proximity, resale_transaction, hdb_block_proximity_class, town_name).
 --
--- Run one query at a time; each is independent and each carries its verified
--- result underneath as a comment, so a reviewer can tell whether their own run
--- matches. Numbers below were checked against the committed CSVs with an
--- independent Python re-implementation (scripts/hawker_geo/_verify_queries.py)
--- because no PostgreSQL server was available in this environment - if your run
--- disagrees, suspect the load, not the query.
+-- Each query is independent and carries its verified result underneath, so a
+-- reviewer can tell whether their own run matches. The numbers were checked
+-- against the committed CSVs by an independent Python re-implementation
+-- (verify_queries.py) and against a live load of schema_hawker.sql - if your
+-- run disagrees, suspect the load, not the query.
 -- ===========================================================================
 
 
@@ -20,30 +17,14 @@
 -- Q4. Does walking distance to a hawker centre associate with resale price,
 --     once town and flat type are held fixed?
 --
--- Design notes (all three matter for the answer to be meaningful):
+-- 4 ROOM and 2020-01 onward only (otherwise the "effect" is mostly flat size
+-- and lease age); compared WITHIN town (towns differ in price level by 2x);
+-- HAVING n >= 30 per class so a median means something.
 --
---   * One flat type (4 ROOM) and one period (2020-01 onward). Without this the
---     "effect" is mostly flat size and remaining lease: 5-room and executive
---     flats are both larger and newer, and they are unevenly distributed
---     across towns.
---
---   * Compare WITHIN town, never across towns. Towns differ in price level by
---     a factor of two (BM ~ S$880k vs JE ~ S$457k in class 1), which would
---     swamp any proximity effect in a pooled average.
---
---   * HAVING n >= 30 per class. A median over a handful of transactions is
---     noise. This drops 5 of the 26 towns (see the diagnostic query below for
---     which ones and why) and is a deliberate sample-size decision, not data
---     loss.
---
--- What to look for in the result: the association is NOT monotone. In most
--- towns class 2 is cheaper than class 1, which is the expected direction, but
--- class 3 often ticks back up - those are the older, larger, better-connected
--- estates (e.g. CL, GL) where "far from a hawker centre" is really "far from
--- everything", i.e. a landed-adjacent or low-density area, not a worse one.
--- The honest conclusion is that proximity to a hawker centre is a weak and
--- non-monotone price signal, and that it is a *proxy* for estate maturity
--- rather than an amenity people pay a clean premium for.
+-- Result is NOT monotone: in most towns class 2 is cheaper than class 1, but
+-- class 3 often ticks back up - older, larger, better-connected estates where
+-- "far from a hawker centre" is really "far from everything". Proximity is a
+-- weak, non-monotone price signal and a proxy for estate maturity.
 -- ===========================================================================
 WITH priced AS (
     SELECT b.town          AS town_code,
@@ -71,12 +52,11 @@ GROUP  BY n.town_name
 HAVING COUNT(*) FILTER (WHERE pr.proximity_class = 1) >= 30
    AND COUNT(*) FILTER (WHERE pr.proximity_class = 2) >= 30
    AND COUNT(*) FILTER (WHERE pr.proximity_class = 3) >= 30
--- A town_name tiebreaker is not cosmetic: BUKIT PANJANG and JURONG WEST both
--- land on a class-1 median of exactly S$490,000, so without it those two rows
--- would come back in whatever order the executor happened to produce.
+-- tiebreaker is not cosmetic: BUKIT PANJANG and JURONG WEST both land on a
+-- class-1 median of exactly S$490,000
 ORDER  BY median_class1 DESC, n.town_name;
 
--- Verified result: 21 towns survive (of 26).
+-- Verified result: 21 of 26 towns survive.
 --
 --   town_name            median_class1  median_class2  median_class3     n1     n2     n3
 --   BUKIT MERAH                880,000        765,000        833,000    862  1,475    271
@@ -101,19 +81,15 @@ ORDER  BY median_class1 DESC, n.town_name;
 --   WOODLANDS                  470,000        490,000        500,000    175  1,874  3,386
 --   JURONG EAST                456,500        469,000        521,052     58    540    428
 --
--- Note on the fractional medians (748,388 / 719,888 / 495,944 / 508,888 /
--- 521,052): those towns have an even number of transactions in that class, so
--- PERCENTILE_CONT interpolates between the two middle prices and the median is
--- not a whole dollar amount. That is correct behaviour, not a rounding bug.
+-- Fractional medians (748,388 / 719,888 / 495,944 / 508,888 / 521,052) are
+-- correct: those towns have an even number of transactions in that class, so
+-- PERCENTILE_CONT interpolates between the two middle prices.
 
 
 -- ===========================================================================
 -- Q4 diagnostic. Which towns dropped out, and was it because the class is
 -- structurally empty or merely too thin to summarise?
---
--- Worth one sentence in the report, because "21 of 26" on its own looks like
--- data loss. It is not: four towns have no flats in that class at all, and
--- only the Central Area has a class that exists but is too small.
+-- ("21 of 26" looks like data loss; it is not.)
 -- ===========================================================================
 WITH priced AS (
     SELECT b.town AS town_code, c.proximity_class, t.resale_price
@@ -141,31 +117,22 @@ JOIN   town_name n ON n.town_code = c.town_code
 WHERE  LEAST(c.n1, c.n2, c.n3) < 30
 ORDER  BY LEAST(c.n1, c.n2, c.n3), n.town_name;
 
--- Verified result (5 rows, ordered by LEAST(n1,n2,n3) then name):
+-- Verified result (5 rows):
 --   town_name        n1    n2    n3   why_excluded
 --   BUKIT TIMAH      47    96     0   structural: class empty   (n3 = 0)
 --   MARINE PARADE    82   169     0   structural: class empty   (n3 = 0)
 --   PUNGGOL           0   770  6144   structural: class empty   (n1 = 0)
---   SENGKANG          0     0  1291   structural: class empty   (n1 = n2 = 0)
+--   SERANGOON          0     0  1291   structural: class empty   (n1 = n2 = 0)
 --   CENTRAL AREA    440    80    10   thin: class too small     (n3 = 10)
 
 
 -- ===========================================================================
 -- Q5. Does having a fresh market within a 1 km walk associate with price?
 --
--- "Has a fresh market" is defined as no_of_mkt_produce_stalls > 0 from the
--- official stall register - NOT from the centre's name. Only 20 of 107 named
--- centres actually contain the word "market", so name matching would be
--- badly wrong in both directions.
---
--- 23 of the 129 centres opened after the official register's snapshot and
--- therefore have NULL stall counts. NULL means "we do not know", which is not
--- the same as "no market". The strict scenario below excludes them; the
--- sensitivity variant right after it treats them as having a market, to show
--- how much of the headline gap depends on that assumption.
---
--- 1 km is the walk, not the straight line: proximity_class 2 ends at exactly
--- 1000 m, so this predicate is the same boundary the class definition uses.
+-- "Has a fresh market" = no_of_mkt_produce_stalls > 0 from the official stall
+-- register, NOT the centre's name (only 20 of 107 named centres contain the
+-- word "market"). The 22 centres with NULL stall counts are excluded here
+-- (strict); the sensitivity variant below treats them as having one.
 -- ===========================================================================
 WITH block_fresh AS (
     SELECT b.block_id,
@@ -198,13 +165,12 @@ ORDER  BY f.has_fresh_market_nearby DESC;
 
 
 -- ===========================================================================
--- Q5 sensitivity. Same query, but the 23 attribute-unknown centres are treated
--- as having a fresh market. This is the optimistic bound.
+-- Q5 sensitivity. Same query, but the 22 attribute-unknown centres are treated
+-- as having a fresh market (the optimistic bound).
 --
--- The gap collapses from +14.7% to +5.0%. That is the single most important
--- caveat on Q5: roughly two thirds of the measured premium depends on an
--- assumption about 23 centres we have no stall data for. Report both numbers
--- and say so explicitly - do not quote +14.7% alone.
+-- The gap collapses from +14.7% to +5.0%: two thirds of the measured premium
+-- depends on an assumption about 22 centres we have no stall data for. Report
+-- both numbers - do not quote +14.7% alone.
 -- ===========================================================================
 WITH block_fresh AS (
     SELECT b.block_id,
@@ -238,15 +204,8 @@ ORDER  BY f.has_fresh_market_nearby DESC;
 
 
 -- ===========================================================================
--- Coverage diagnostic. How much of the housing stock is this analysis even
--- able to speak about?
---
--- This is the number that should accompany Q5 wherever it is quoted. 34.7% of
--- blocks have no fresh-market centre within a 3 km walk - and almost all of
--- them are not "far from a market", they are blocks whose only nearby centres
--- are the 23 attribute-unknown ones. So the strict Q5 comparison is really
--- "well-documented estates vs everything else", and the estate-age confound is
--- doing at least some of the work.
+-- Coverage diagnostic. How much of the housing stock can this analysis even
+-- speak about? This number should accompany Q5 wherever it is quoted.
 -- ===========================================================================
 WITH block_flags AS (
     SELECT b.block_id,

@@ -2,38 +2,35 @@
 """
 03_derive_proximity.py
 ======================
-Turn the raw walking-distance pairs into the relational artefacts the schema
-needs, and quantify how much the choice of distance metric actually matters.
+Turn the routed pairs from 02 into every CSV the schema (schema_hawker.sql)
+loads, and quantify how much the choice of distance metric actually matters.
 
-Outputs
--------
-output/hdb_hawker_proximity.csv
-    The many-to-many relation `proximity(block, hawker)` with the walking
-    distance, the derived proximity class, and - for comparison only - the
-    straight-line and Manhattan distances.
-output/hdb_block_nearest.csv
-    One row per HDB block: its nearest hawker centre and that centre's class.
-    This is what Q4 needs (a flat's "proximity class" = the class of the
-    closest hawker it can reach).
-output/method_comparison.csv
-    Per-block comparison of the nearest centre found by walking vs by
-    straight-line vs by Manhattan, i.e. the misclassification cost of the
-    cheap metrics.
+Outputs (all in data/hawker_geo/)
+-------------------------------
+hdb_hawker_proximity.csv   the M:N relation with walking distance + class
+hdb_block_nearest.csv      one row per block: its nearest centre and that class
+method_comparison.csv      nearest centre by walking vs straight-line vs Manhattan
+resale_transaction.csv      resale transactions joined to block_id (--skip-resale
+                            to disable; needs the team's RESALE_CLEANED.csv)
+resale_unmatched.csv       distinct (block, street) that failed to match
+resale_join_report.txt     human-readable join report
 
-Proximity definition (3 levels, as required by Task 1.1)
---------------------------------------------------------
-    class 1  "very near"  walk <= 500 m     (~7 min at 4.5 km/h)
-    class 2  "near"       500 < walk <= 1000 m (~7-14 min)
-    class 3  "far"        walk > 1000 m
+Proximity definition (Task 1.1)
+-------------------------------
+    class 1  walk <= 500 m       (~7 min at 4.5 km/h)
+    class 2  500 < walk <= 1000 m
+    class 3  walk > 1000 m
 
-500 m is the standard walking-catchment radius used in urban planning for a
-neighbourhood amenity; 1000 m is the "10-minute walk" boundary. Both are
-thresholds a reader can defend in the viva without appealing to the data.
+500 m is the standard walking-catchment radius for a neighbourhood amenity,
+1000 m the "10-minute walk" boundary - both defensible without appealing to the
+data. Change them with --class1/--class2; no re-routing needed.
 
 Usage
 -----
     python 03_derive_proximity.py
     python 03_derive_proximity.py --class1 400 --class2 800
+    python 03_derive_proximity.py --walk data/hawker_geo/hdb_hawker_walk_onemap.csv
+    python 03_derive_proximity.py --skip-resale
 """
 
 from __future__ import annotations
@@ -41,6 +38,8 @@ from __future__ import annotations
 import argparse
 import csv
 import math
+import os
+import re
 import statistics
 import sys
 from collections import Counter, defaultdict
@@ -48,7 +47,12 @@ from pathlib import Path
 
 CLASS_LABELS = {1: "very_near", 2: "near", 3: "far"}
 
+BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+
+# =========================================================================== #
+# Part 1: proximity classes
+# =========================================================================== #
 def manhattan_m(lon1: float, lat1: float, lon2: float, lat2: float) -> float:
     """Axis-aligned distance using a local equirectangular projection."""
     mean_lat = math.radians((lat1 + lat2) / 2)
@@ -65,20 +69,7 @@ def classify(distance_m: float, class1_max: float, class2_max: float) -> int:
     return 3
 
 
-def main() -> int:
-    here = Path(__file__).resolve().parents[2]  # repo root (scripts/hawker_geo -> scripts -> .)
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--walk", default=str(here / "data" / "hawker_geo" / "hdb_hawker_walk.csv"))
-    parser.add_argument("--hdb", default=str(here / "data" / "raw_data" / "hdb.csv"))
-    parser.add_argument("--hawker", default=str(here / "data" / "hawker_geo" / "hawker_centre.csv"))
-    parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
-    parser.add_argument("--class1", type=float, default=500.0)
-    parser.add_argument("--class2", type=float, default=1000.0)
-    args = parser.parse_args()
-
-    outdir = Path(args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
-
+def derive_proximity(args, outdir: Path) -> None:
     # ---------------- coordinates for the comparison metrics ---------------- #
     with Path(args.hdb).open(encoding="utf-8-sig") as handle:
         hdb_rows = list(csv.DictReader(handle))
@@ -88,9 +79,9 @@ def main() -> int:
         block_id = f"B{index + 1:05d}"
         coords[block_id] = (float(row["lng"]), float(row["lat"]))
         # residential == 'N' is exactly the set of blocks with zero dwelling
-        # units (2,261 of 12,442): pure commercial HDB blocks that can never
-        # carry a resale transaction. Reported separately so the class
-        # distribution is not diluted by them.
+        # units (2,261 of 12,442): pure commercial blocks that can never carry
+        # a resale transaction. Reported separately so the class distribution
+        # is not diluted by them.
         is_residential[block_id] = row["residential"].strip() == "Y"
 
     with Path(args.hawker).open(encoding="utf-8-sig") as handle:
@@ -347,6 +338,263 @@ def main() -> int:
     print(f"\nwrote {relation_path} ({len(pairs)} rows)")
     print(f"wrote {nearest_path} ({total_blocks} rows)")
     print(f"wrote {comparison_path}")
+
+
+# =========================================================================== #
+# Part 2: attach the resale fact table to the block dimension
+# =========================================================================== #
+# The HDB property file uses 3-letter contract-town codes; the resale file uses
+# full planning-town names. The mapping is 1:1 over all 26 towns and was
+# verified block by block against the team's hdb_block_clean_YM.csv.
+TOWN_CODE_TO_NAME = {
+    "AMK": "ANG MO KIO", "BB": "BUKIT BATOK", "BD": "BEDOK",
+    "BH": "BISHAN", "BM": "BUKIT MERAH", "BP": "BUKIT PANJANG",
+    "BT": "BUKIT TIMAH", "CCK": "CHOA CHU KANG", "CL": "CLEMENTI",
+    "CT": "CENTRAL AREA", "GL": "GEYLANG", "HG": "HOUGANG",
+    "JE": "JURONG EAST", "JW": "JURONG WEST", "KWN": "KALLANG/WHAMPOA",
+    "MP": "MARINE PARADE", "PG": "PUNGGOL", "PRC": "PASIR RIS",
+    "QT": "QUEENSTOWN", "SB": "SEMBAWANG", "SGN": "SERANGOON",
+    "SK": "SENGKANG", "TAP": "TAMPINES", "TP": "TOA PAYOH",
+    "WL": "WOODLANDS", "YS": "YISHUN",
+}
+
+# Only abbreviations that are unambiguous in Singapore street names.
+ABBREV = {
+    "AVE": "AVENUE", "AV": "AVENUE", "ST": "STREET", "RD": "ROAD",
+    "DR": "DRIVE", "CRES": "CRESCENT", "CL": "CLOSE", "JLN": "JALAN",
+    "LOR": "LORONG", "NTH": "NORTH", "STH": "SOUTH", "UPP": "UPPER",
+    "BT": "BUKIT", "KG": "KAMPONG", "KPG": "KAMPONG", "TG": "TANJONG",
+    "CTRL": "CENTRAL", "IND": "INDUSTRIAL",
+}
+
+
+def _first_existing(*paths: str) -> str:
+    """Resolve a data file that may live in either layout.
+
+    Standalone (this folder is the project root):  data/resale_cleaned.csv
+    Inside the team repo (this folder is hawker_geo/):  data/src/resale/
+    The 75 MB resale export is deliberately not duplicated, so the second
+    layout is the normal one there.
+    """
+    for path in paths:
+        if os.path.exists(path):
+            return path
+    return paths[0]
+
+
+def clean_block(value: str) -> str:
+    """'BLK 123' / 'blk123' / ' 123 ' -> '123'."""
+    text = (value or "").strip().upper()
+    text = re.sub(r"^(BLK|BLOCK)\b\.?\s*", "", text)
+    return text.strip()
+
+
+def clean_street_exact(value: str) -> str:
+    """Conservative normalisation used for stage 1."""
+    text = (value or "").upper()
+    text = text.replace(".", " ").replace(",", " ")
+    return " ".join(text.split())
+
+
+def clean_street_expanded(value: str) -> str:
+    """Stage 2: additionally expand road-type abbreviations."""
+    tokens = clean_street_exact(value).split()
+    return " ".join(ABBREV.get(token, token) for token in tokens)
+
+
+def read_blocks(path: str):
+    """block_id keyed by (blk_no, street) in both normalisation flavours."""
+    exact: dict[tuple[str, str], set[str]] = defaultdict(set)
+    expanded: dict[tuple[str, str], set[str]] = defaultdict(set)
+    town_of: dict[str, str] = {}
+
+    with open(path, newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            block_id = row["block_id"].strip()
+            block_no = clean_block(row["blk_no"])
+            exact[(block_no, clean_street_exact(row["street"]))].add(block_id)
+            expanded[(block_no, clean_street_expanded(row["street"]))].add(block_id)
+            town_of[block_id] = TOWN_CODE_TO_NAME.get(row["town"].strip(), "")
+
+    return exact, expanded, town_of
+
+
+def join_resale(args, outdir: Path) -> None:
+    """Match every resale transaction to a block_id.
+
+    Stage 1 exact match on uppercased, whitespace-collapsed (block, street);
+    stage 2 retry with road-type abbreviations expanded (a safety net - on the
+    current data it recovers nothing, because the residual mismatches are
+    demolished blocks, not spelling variants). A candidate is only accepted
+    when it is unambiguous; anything still unmatched is reported, never guessed.
+    """
+    resale_default = _first_existing(
+        os.path.join(BASE, "data", "src", "resale", "RESALE_CLEANED.csv"),
+        os.path.join(BASE, "data", "resale_cleaned.csv"),
+    )
+    removed_default = _first_existing(
+        os.path.join(BASE, "data", "src", "resale", "RESALE_REMOVED.csv"),
+        os.path.join(BASE, "data", "resale_removed.csv"),
+    )
+    if not os.path.exists(resale_default):
+        print(f"\n[resale] skipped: {resale_default} not found")
+        return
+
+    exact, expanded, town_of = read_blocks(args.blocks)
+    ambiguous_exact = {k: v for k, v in exact.items() if len(v) > 1}
+    print(f"\n[resale] {len(town_of)} blocks, {len(exact)} distinct exact keys")
+    if ambiguous_exact:
+        print(f"[resale][warn] {len(ambiguous_exact)} ambiguous exact keys - rejected")
+
+    matched_exact = matched_expanded = unmatched = 0
+    town_mismatch: list[tuple[str, str, str, str]] = []
+    miss_counter: Counter = Counter()
+    miss_years: dict[tuple[str, str], list[str]] = defaultdict(list)
+    miss_town: dict[tuple[str, str], str] = {}
+
+    out_txn = outdir / "resale_transaction.csv"
+    out_miss = outdir / "resale_unmatched.csv"
+    out_report = outdir / "resale_join_report.txt"
+
+    txn_handle = open(out_txn, "w", newline="", encoding="utf-8")
+    writer = csv.writer(txn_handle)
+    writer.writerow([
+        "resale_id", "block_id", "month", "town", "flat_type",
+        "storey_min", "storey_max", "floor_area_sqm", "flat_model",
+        "lease_commence_date", "remaining_lease_years", "resale_price",
+    ])
+
+    seq = 0
+    with open(resale_default, newline="", encoding="utf-8-sig") as handle:
+        for row in csv.DictReader(handle):
+            seq += 1
+            resale_id = f"R{seq:07d}"
+            block_no = clean_block(row["block"])
+            street_exact = clean_street_exact(row["street_name"])
+            town = row["town"].strip().upper()
+
+            block_id = None
+            key = (block_no, street_exact)
+            if key in exact and len(exact[key]) == 1:
+                block_id = next(iter(exact[key]))
+                matched_exact += 1
+            else:
+                key2 = (block_no, clean_street_expanded(row["street_name"]))
+                if key2 in expanded and len(expanded[key2]) == 1:
+                    block_id = next(iter(expanded[key2]))
+                    matched_expanded += 1
+
+            if block_id is None:
+                unmatched += 1
+                miss_counter[key] += 1
+                miss_years[key].append(row["month"][:4])
+                miss_town[key] = town
+            else:
+                block_town = town_of.get(block_id, "")
+                if block_town and town and block_town != town:
+                    town_mismatch.append((resale_id, block_id, town, block_town))
+
+            writer.writerow([
+                resale_id, block_id or "", row["month"], town, row["flat_type"],
+                row["storey_min"], row["storey_max"], row["floor_area_sqm"],
+                row["flat_model"], row["lease_commence_date"],
+                row["remaining_lease_years"], row["resale_price"],
+            ])
+
+    txn_handle.close()
+
+    with open(out_miss, "w", newline="", encoding="utf-8") as handle:
+        out = csv.writer(handle)
+        out.writerow(["block", "street_name", "town", "txn_rows",
+                      "first_year", "last_year"])
+        for key, count in miss_counter.most_common():
+            years = miss_years[key]
+            out.writerow([key[0], key[1], miss_town[key], count,
+                          min(years), max(years)])
+
+    removed_rows = 0
+    if os.path.exists(removed_default):
+        with open(removed_default, newline="", encoding="utf-8-sig") as handle:
+            removed_rows = sum(1 for _ in csv.DictReader(handle))
+
+    total = seq
+    lines = [
+        "RESALE  <->  HDB BLOCK  JOIN REPORT",
+        "=" * 46,
+        f"transactions read            : {total:,}",
+        f"matched (exact)              : {matched_exact:,}"
+        f"  ({100 * matched_exact / total:.2f}%)",
+        f"matched (abbrev-expanded)    : {matched_expanded:,}"
+        f"  ({100 * matched_expanded / total:.2f}%)",
+        f"unmatched (block_id = NULL)  : {unmatched:,}"
+        f"  ({100 * unmatched / total:.2f}%)",
+        f"distinct unmatched blocks    : {len(miss_counter):,}",
+        f"rows rejected upstream       : {removed_rows:,}",
+        f"town inconsistencies         : {len(town_mismatch):,}",
+        "",
+    ]
+    if town_mismatch:
+        lines.append("First 10 town inconsistencies (same block+street, different town):")
+        lines.extend(
+            f"  {rid}  {bid}  resale={rt}  block={bt}"
+            for rid, bid, rt, bt in town_mismatch[:10]
+        )
+        lines.append("")
+
+    lines.append("Unmatched blocks by first year seen (evidence of demolition):")
+    by_decade: Counter = Counter()
+    for key in miss_counter:
+        first = min(miss_years[key])
+        by_decade[f"{first[:3]}0s"] += miss_counter[key]
+    for decade in sorted(by_decade):
+        lines.append(f"  {decade}  {by_decade[decade]:,} rows")
+    lines.append("")
+
+    lines.append("Top 15 unmatched blocks by transaction volume:")
+    for key, count in miss_counter.most_common(15):
+        years = miss_years[key]
+        lines.append(f"  {key[0]:<5} {key[1]:<28} {miss_town[key]:<14} "
+                     f"{count:>5} rows  {min(years)}-{max(years)}")
+    lines.append("")
+    lines.append(
+        "Interpretation: the unmatched blocks are ones demolished or redeveloped"
+        " before the current HDB property register snapshot, so no geocode - and"
+        " therefore no proximity class - can exist for them. They are kept with a"
+        " NULL block_id; an inner join on hdb_block excludes them from Q4/Q5."
+    )
+
+    report = "\n".join(lines)
+    with open(out_report, "w", encoding="utf-8") as handle:
+        handle.write(report + "\n")
+
+    print(report)
+    print(f"\nwrote {out_txn}")
+    print(f"wrote {out_miss}")
+    print(f"wrote {out_report}")
+
+
+# =========================================================================== #
+def main() -> int:
+    here = Path(__file__).resolve().parents[2]  # repo root
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--walk", default=str(here / "data" / "hawker_geo" / "hdb_hawker_walk.csv"))
+    parser.add_argument("--hdb", default=str(here / "data" / "raw_data" / "hdb.csv"))
+    parser.add_argument("--hawker", default=str(here / "data" / "hawker_geo" / "hawker_centre.csv"))
+    parser.add_argument("--blocks", default=str(here / "data" / "hawker_geo" / "hdb_block.csv"),
+                        help="block dimension the resale join maps onto")
+    parser.add_argument("--outdir", default=str(here / "data" / "hawker_geo"))
+    parser.add_argument("--class1", type=float, default=500.0)
+    parser.add_argument("--class2", type=float, default=1000.0)
+    parser.add_argument("--skip-resale", action="store_true",
+                        help="skip the resale join (needs RESALE_CLEANED.csv)")
+    args = parser.parse_args()
+
+    outdir = Path(args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    derive_proximity(args, outdir)
+    if not args.skip_resale:
+        join_resale(args, outdir)
     return 0
 
 
