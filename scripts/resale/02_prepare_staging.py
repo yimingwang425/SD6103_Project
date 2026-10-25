@@ -1,21 +1,30 @@
 """
-Step 2: Prepare Staging CSVs for Database Loading
-==================================================
+02_prepare_staging.py — Prepare Staging CSVs for Database Loading
+=================================================================
 
-Purpose:
-    Transform cleaned resale CSVs into staging CSVs ready for database
-    loading. Each staging CSV is a flat denormalised table; the actual
-    split into hdb_flat + resale_transaction happens inside PostgreSQL
-    via 04_incremental_load.sql (staging → JOIN hdb_block → INSERT).
+Overview:
+    Transforms cleaned resale CSVs (from 01_clean_resale.py) into staging
+    CSVs that can be directly loaded into a PostgreSQL temporary table
+    via COPY. The staging format is a flat denormalised table; the actual
+    normalisation into hdb_flat + resale_transaction happens inside
+    PostgreSQL via 04_incremental_load.sql using staging + JOIN.
 
-    This script does NOT match block_id or split into two tables.
-    It only reshapes columns:
-      - month "2015-01" → transaction_year + transaction_month
-      - block → blk_no,  street_name → street
-      - drops: town, lease_commence_date (not needed for staging)
+    This script does NOT:
+      - Match or resolve block_id (done in SQL via JOIN to hdb_block)
+      - Split data into separate table CSVs (done in SQL via INSERT...SELECT)
+      - Perform deduplication (done in SQL via ON CONFLICT DO NOTHING)
+
+Column mapping from cleaned -> staging:
+    month ("2015-01")    -> transaction_year (2015) + transaction_month (1)
+    block                -> blk_no
+    street_name          -> street
+    town                 -> (dropped, not needed for staging)
+    lease_commence_date  -> (dropped, not needed for staging)
+    All other columns    -> carried over unchanged
 
 Input:
-    data/src/resale/cleaned/file{1..5}_cleaned.csv  (from 01_clean_resale.py)
+    data/clean_data/resale/file{1..5}_cleaned.csv
+    (produced by 01_clean_resale.py, in chronological order)
 
 Output:
     data/clean_data/resale/incremental/
@@ -25,20 +34,24 @@ Output:
       file4_staging.csv  (2015-2016)
       file5_staging.csv  (2017-onwards)
 
-    Staging CSV columns (matches the TEMP TABLE in 04_incremental_load.sql):
+    Staging CSV columns (must match the TEMP TABLE definition in
+    04_incremental_load.sql and run_benchmark.py):
       blk_no, street, flat_type, storey_min, storey_max,
       floor_area_sqm, flat_model, transaction_year, transaction_month,
       remaining_lease_years, resale_price
 
-Run:
+Dependencies:
+    - 01_clean_resale.py must be run first
+
+Usage:
     cd <project_root>
-    python scripts/resale/02_split_resale.py
+    python scripts/resale/02_prepare_staging.py
 """
 
 import csv
 import os
 
-# ── Paths ──
+# ── Configuration ────────────────────────────────────────────────
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 CLEANED_DIR = os.path.join(PROJECT_ROOT, "data", "clean_data", "resale")
 OUT_DIR = os.path.join(PROJECT_ROOT, "data", "clean_data", "resale", "incremental")
@@ -46,6 +59,8 @@ os.makedirs(OUT_DIR, exist_ok=True)
 
 NUM_FILES = 5
 
+# Column order for staging output CSVs — must match the TEMP TABLE
+# definition in 04_incremental_load.sql
 STAGING_COLUMNS = [
     "blk_no", "street", "flat_type",
     "storey_min", "storey_max", "floor_area_sqm", "flat_model",
@@ -54,7 +69,7 @@ STAGING_COLUMNS = [
 ]
 
 
-# ── Main ──
+# ── Main processing loop ────────────────────────────────────────
 for i in range(1, NUM_FILES + 1):
     cleaned_path = os.path.join(CLEANED_DIR, f"file{i}_cleaned.csv")
     staging_rows = []
@@ -75,7 +90,7 @@ for i in range(1, NUM_FILES + 1):
                 "flat_model":            row["flat_model"],
                 "transaction_year":      int(year),
                 "transaction_month":     int(month),
-                "remaining_lease_years":  int(row["remaining_lease_years"]),
+                "remaining_lease_years": int(row["remaining_lease_years"]),
                 "resale_price":          int(row["resale_price"]),
             })
 
@@ -85,7 +100,7 @@ for i in range(1, NUM_FILES + 1):
         w.writeheader()
         w.writerows(staging_rows)
 
-    print(f"File {i}: {total} rows")
+    print(f"File {i}: {total:,} rows")
 
 print(f"\nOutput directory: {OUT_DIR}")
 print("Done.")
