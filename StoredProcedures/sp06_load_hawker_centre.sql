@@ -1,14 +1,3 @@
--- ============================================================
--- sp06_load_hawker_centre.sql
--- Stored Procedure: public.sp_load_hawker_centre()
---
--- Load hawker centre data from staging.hawker_centre into
--- public.hawker_centre. Empty strings become NULL: 17 centres have no
--- postal code and 23 have no stall counts (opened after the official
--- register's snapshot) - unknown is not "zero stalls", and Q5's
--- predicate excludes them. NOT EXISTS on hawker_name makes re-runs safe.
--- ============================================================
-
 CREATE OR REPLACE PROCEDURE public.sp_load_hawker_centre()
 LANGUAGE plpgsql
 AS $$
