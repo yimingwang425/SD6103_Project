@@ -1,41 +1,17 @@
 #!/usr/bin/env python3
 """
-01_build_proximity.py - build the hawker-proximity dataset end to end, in
-three independently re-runnable stages:
+01_build_proximity.py - build the hawker-proximity dataset in three
+independently re-runnable stages (--stage clean|walk|derive|all):
 
-  clean   Clean the raw hawker_geo.csv export into the DB-ready
-          HAWKER_CENTRE table (data/clean_data/hawker_centre.csv),
-          joining the official data.gov.sg register for the stall counts
-          Q5 needs. Seconds; uses the cached official download.
+  clean   Raw hawker_geo.csv -> data/clean_data/hawker_centre.csv
+          (stall counts joined from the cached official register).
+  walk    OSRM foot routing for every block-centre pair (~37 min cold,
+          seconds with the committed cache; resumable).
+  derive  -> data/clean_data/proximity.csv + proximity_level.csv.
 
-  walk    Compute real walking path distances between every HDB block and
-          every nearby hawker centre with OSRM's foot-routing service
-          (~37 min cold, seconds with the committed cache). Why not
-          straight-line: great-circle distance cuts through buildings,
-          canals and expressways; the measured detour factor is 1.2-1.6x
-          - exactly the error that matters at the 500/1000 m thresholds.
-          Resumable: every completed batch is appended to osrm_cache.jsonl
-          and skipped on re-run.
-
-  derive  Turn the routed pairs into the proximity tables
-          (data/clean_data/proximity.csv + proximity_level.csv) and
-          quantify how much the choice of distance metric matters.
-
-Usage:
-  python 01_build_proximity.py                          # all stages
-  python 01_build_proximity.py --stage clean            # one stage
-  python 01_build_proximity.py --stage walk --limit 300 # smoke test
-
-Proximity definition (Task 1.1), walking distance:
-  level 1  walk <= 500 m        (~7 min at 4.5 km/h)
-  level 2  500 < walk <= 1000 m
-  level 3  walk > 1000 m
-A block's own level (what Q4 uses) is the level of its nearest centre.
-
-The pipeline speaks legacy Bxxxxx/Hxxx ids internally (the routing caches
-are keyed on them); the relation CSV carries natural keys instead:
-(blk_no, street) for blocks and hawker_name for centres, which is what
-the database resolves surrogate ids on at load time (sp06-sp08).
+Proximity (walking distance): level 1 <=500 m, 2 <=1000 m, 3 >1000 m.
+The relation CSV carries natural keys (blk_no, street / hawker_name);
+the database resolves surrogate ids on them at load time (sp06-sp08).
 """
 
 from __future__ import annotations

@@ -2,40 +2,11 @@
 -- sp06_load_hawker_centre.sql
 -- Stored Procedure: public.sp_load_hawker_centre()
 --
--- Purpose:
---     Load hawker centre data from staging.hawker_centre into
---     public.hawker_centre. hawker_id is IDENTITY, assigned in CSV row
---     order; nothing downstream depends on the value, because sp08
---     resolves centres by hawker_name (the natural key).
---
--- Source table:
---     staging.hawker_centre (all TEXT columns, loaded by the loader)
---     Required columns: hawker_name, street, latitude, longitude,
---                       postal, no_of_mkt_produce_stalls,
---                       no_of_cooked_food_stalls
---
--- Target table:
---     public.hawker_centre (hawker_name, street, latitude, longitude,
---                           postal, no_of_mkt_produce_stalls,
---                           no_of_cooked_food_stalls)
---     UNIQUE constraint: hawker_name
---
--- Empty strings:
---     The cleaned CSV writes '' for unknown values (17 centres have no
---     postal code, 23 have no stall counts - they opened after the
---     official register's snapshot). '' becomes NULL here: unknown is
---     not "zero stalls", and Q5's predicate must exclude them, not
---     count them as market-less.
---
--- Deduplication:
---     NOT EXISTS on hawker_name, so re-running the procedure is safe.
---
--- Prerequisites:
---     - sp01_SchemaCreation.sql (public.hawker_centre table exists)
---     - staging.hawker_centre is loaded with the current batch
---
--- Usage:
---     CALL public.sp_load_hawker_centre();
+-- Load hawker centre data from staging.hawker_centre into
+-- public.hawker_centre. Empty strings become NULL: 17 centres have no
+-- postal code and 23 have no stall counts (opened after the official
+-- register's snapshot) - unknown is not "zero stalls", and Q5's
+-- predicate excludes them. NOT EXISTS on hawker_name makes re-runs safe.
 -- ============================================================
 
 CREATE OR REPLACE PROCEDURE public.sp_load_hawker_centre()

@@ -53,11 +53,7 @@ BEGIN
     CREATE INDEX IF NOT EXISTS idx_hdb_block_town ON public.hdb_block (town_id);
     RAISE NOTICE 'indexes created';
 
-    -- creating hdb_flat schema
-    -- a flat = (block, flat_type, storey_min, storey_max, floor_area_sqm,
-    -- flat_model): the resale data has no unit number, so identical units
-    -- collapse into one row. flat_model is VARCHAR(40): the longest model in
-    -- the data, "Premium Apartment Loft", needs 22
+    -- creating hdb_flat schema; resale rows have no unit number, so identical units collapse into one row
     CREATE TABLE IF NOT EXISTS public.hdb_flat (
         flat_id        INT          GENERATED ALWAYS AS IDENTITY,
         block_id       INT          NOT NULL,
@@ -74,9 +70,7 @@ BEGIN
     );
     RAISE NOTICE 'hdb_flat schema created';
 
-    -- creating resale_transaction schema
-    -- one row per transaction; the transactions on blocks demolished before
-    -- the register snapshot have no block and are excluded at load time
+    -- creating resale_transaction schema; one row per transaction
     CREATE TABLE IF NOT EXISTS public.resale_transaction (
         transaction_id        INT           GENERATED ALWAYS AS IDENTITY,
         flat_id               INT           NOT NULL,
@@ -97,9 +91,7 @@ BEGIN
         ON public.resale_transaction (transaction_year, transaction_month);
     RAISE NOTICE 'resale_transaction schema created';
 
-    -- creating hawker_centre schema
-    -- 129 centres; stall counts from the official register, NULL for the 23
-    -- opened after its snapshot - unknown, not "no market"
+    -- creating hawker_centre schema; stall counts NULL for the 23 centres opened after the register snapshot
     CREATE TABLE IF NOT EXISTS public.hawker_centre (
         hawker_id                INT          GENERATED ALWAYS AS IDENTITY,
         hawker_name              VARCHAR(100) NOT NULL,
@@ -116,10 +108,7 @@ BEGIN
     );
     RAISE NOTICE 'hawker_centre schema created';
 
-    -- creating proximity_level schema
-    -- walking bands (min, max]: a distance on a boundary belongs to the lower
-    -- level. Walking distances, not the straight-line 800/2000 m bands.
-    -- distance_max_m is NULL for the open-ended top level
+    -- creating proximity_level schema; walking bands (min, max], top level open-ended
     CREATE TABLE IF NOT EXISTS public.proximity_level (
         level_id       INT          PRIMARY KEY,
         category       VARCHAR(10)  NOT NULL UNIQUE,
@@ -128,9 +117,7 @@ BEGIN
     );
     RAISE NOTICE 'proximity_level schema created';
 
-    -- creating proximity schema
-    -- the M:N relation, OSRM foot routing; level_id is derived from distance_m
-    -- and CHECKed against it, so the table cannot drift from the bands
+    -- creating proximity schema; level_id is CHECKed against distance_m, so the table cannot drift from the bands
     CREATE TABLE IF NOT EXISTS public.proximity (
         block_id   INT          NOT NULL,
         hawker_id  INT          NOT NULL,
@@ -148,8 +135,7 @@ BEGIN
     );
     RAISE NOTICE 'proximity schema created';
 
-    -- a block's own level = the level of the nearest centre it can walk to
-    -- (this is what Q4 joins on)
+    -- a block's own level = the nearest centre it can walk to (what Q4 joins on)
     CREATE OR REPLACE VIEW public.hdb_block_proximity_level AS
     SELECT block_id,
            MIN(level_id)   AS level_id,

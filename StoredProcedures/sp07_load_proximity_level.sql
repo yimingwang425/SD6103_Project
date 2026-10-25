@@ -2,33 +2,11 @@
 -- sp07_load_proximity_level.sql
 -- Stored Procedure: public.sp_load_proximity_level()
 --
--- Purpose:
---     Load the three proximity class definitions from
---     staging.proximity_level into public.proximity_level. This is
---     static reference data, not a measured quantity: level_id is the
---     natural key (1/2/3) and travels with the row.
---
--- Source table:
---     staging.proximity_level (all TEXT columns, loaded by the loader)
---     Required columns: level_id, category, distance_min_m, distance_max_m
---
--- Target table:
---     public.proximity_level (level_id, category, distance_min_m,
---                             distance_max_m)
---
--- Bands are walking distances, (min, max]: a distance on a boundary
--- belongs to the lower level. level 3 has no upper bound, so its
--- distance_max_m is NULL (the CSV writes '' for it).
---
--- Deduplication:
---     NOT EXISTS on level_id, so re-running the procedure is safe.
---
--- Prerequisites:
---     - sp01_SchemaCreation.sql (public.proximity_level table exists)
---     - staging.proximity_level is loaded with the current batch
---
--- Usage:
---     CALL public.sp_load_proximity_level();
+-- Load the three proximity class definitions from
+-- staging.proximity_level into public.proximity_level. Static reference
+-- data: bands are walking distances (min, max], so a distance on a
+-- boundary belongs to the lower level; level 3 has no upper bound and
+-- its distance_max_m is NULL. NOT EXISTS on level_id makes re-runs safe.
 -- ============================================================
 
 CREATE OR REPLACE PROCEDURE public.sp_load_proximity_level()

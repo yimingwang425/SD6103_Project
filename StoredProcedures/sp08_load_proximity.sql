@@ -2,50 +2,15 @@
 -- sp08_load_proximity.sql
 -- Stored Procedure: public.sp_load_proximity()
 --
--- Purpose:
---     Load the block-to-hawker proximity relation from
---     staging.proximity into public.proximity. Both foreign keys are
---     resolved by natural key, exactly like sp04/sp05 resolve flat_id:
---       staging.proximity -> public.hdb_block   ON (blk_no, street)
---                         -> public.hawker_centre ON hawker_name
---     so the procedure does not care how the surrogate ids were
---     assigned upstream.
---
--- Source table:
---     staging.proximity (all TEXT columns, loaded by the loader)
---     Required columns: blk_no, street, hawker_name, distance_m, level_id
---
--- Target table:
---     public.proximity (block_id, hawker_id, level_id, distance_m)
---     PRIMARY KEY (block_id, hawker_id)
---
--- Unmatched rows:
---     The relation is computed over all 12,442 blocks in the HDB
---     property register, while hdb_block is loaded from the cleaned
---     register extract (10,194 blocks). Pairs on the remaining 2,248
---     blocks - commercial and other blocks that can never carry a
---     resale transaction - have no parent row and are skipped, with a
---     NOTICE reporting the count. Every block that IS in hdb_block has
---     at least one pair, so coverage of the analysable stock is total.
---
--- Level guard:
---     The schema's CHECK proximity_level_matches_distance binds
---     level_id to distance_m (1: <=500 m, 2: 500-1000 m, 3: >1000 m,
---     walking). A staged row that contradicts its band fails the load
---     instead of silently entering the database.
---
--- Deduplication:
---     NOT EXISTS on (block_id, hawker_id), so re-running is safe.
---
--- Prerequisites:
---     - sp01_SchemaCreation.sql (public.proximity table exists)
---     - sp03_load_hdb_block.sql   (public.hdb_block is populated)
---     - sp06_load_hawker_centre.sql (public.hawker_centre is populated)
---     - sp07_load_proximity_level.sql (public.proximity_level is populated)
---     - staging.proximity is loaded with the current batch
---
--- Usage:
---     CALL public.sp_load_proximity();
+-- Load the block-to-hawker proximity relation from staging.proximity
+-- into public.proximity. block_id and hawker_id are resolved by natural
+-- key ((blk_no, street) and hawker_name), like sp04/sp05 resolve
+-- flat_id. The relation covers all 12,442 registered blocks while
+-- hdb_block holds 10,194: pairs on the other 2,248 blocks (no resale
+-- transactions) have no parent row and are skipped, with a NOTICE.
+-- The schema's CHECK binds level_id to distance_m, so a staged row
+-- that contradicts its band fails the load instead of entering the
+-- database. NOT EXISTS on (block_id, hawker_id) makes re-runs safe.
 -- ============================================================
 
 CREATE OR REPLACE PROCEDURE public.sp_load_proximity()
@@ -56,7 +21,7 @@ DECLARE
     v_no_block  INT;
     v_no_hawker INT;
 BEGIN
-    -- Count staging rows that cannot resolve to a parent (for diagnostics)
+    -- count staging rows that cannot resolve to a parent (diagnostics)
     SELECT COUNT(*) INTO v_no_block
     FROM staging.proximity s
     LEFT JOIN public.hdb_block b
