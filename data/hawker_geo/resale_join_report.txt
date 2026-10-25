@@ -3,8 +3,9 @@ RESALE  <->  HDB BLOCK  JOIN REPORT
 transactions read            : 986,720
 matched (exact)              : 973,782  (98.69%)
 matched (abbrev-expanded)    : 0  (0.00%)
-unmatched (block_id = NULL)  : 12,938  (1.31%)
+unmatched (flat_id = NULL)   : 12,938  (1.31%)
 distinct unmatched blocks    : 172
+distinct flats               : 145,465
 rows rejected upstream       : 51  (see data/src/resale/RESALE_REMOVED.csv)
 town inconsistencies         : 0
 
@@ -29,4 +30,4 @@ Top 15 unmatched blocks by transaction volume:
   172   BOON LAY DR                  JURONG WEST      167 rows  1990-2011
   167   BOON LAY DR                  JURONG WEST      166 rows  1990-2011
 
-Interpretation: the unmatched blocks are ones demolished or redeveloped before the current HDB property register snapshot, so no geocode - and therefore no proximity class - can exist for them. They are kept with a NULL block_id; an inner join on hdb_block excludes them from Q4/Q5.
+Interpretation: the unmatched blocks are ones demolished or redeveloped before the current HDB property register snapshot, so no geocode - and therefore no proximity level - can exist for them. They are kept with a NULL flat_id; an inner join on hdb_flat excludes them from Q4/Q5.

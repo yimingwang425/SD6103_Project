@@ -49,8 +49,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[2]          # repo root
 OUTDIR = HERE / "data" / "hawker_geo"
-PAIRS_CSV = HERE / "data" / "hawker_geo" / "hdb_hawker_proximity.csv"
-BLOCKS_CSV = HERE / "data" / "hawker_geo" / "hdb_block.csv"
+HDB_CSV = HERE / "data" / "raw_data" / "hdb.csv"
 HAWKER_CSV = HERE / "data" / "hawker_geo" / "hawker_centre.csv"
 WALK_CSV = HERE / "data" / "hawker_geo" / "hdb_hawker_walk.csv"
 CACHE = HERE / "data" / "hawker_geo" / "onemap_full.jsonl"
@@ -170,20 +169,22 @@ def main() -> int:
     args = parser.parse_args()
 
     OUTDIR.mkdir(parents=True, exist_ok=True)
-    with BLOCKS_CSV.open(encoding="utf-8-sig") as handle:
+    # coordinates keyed by the legacy Bxxxxx/Hxxx ids: the routing pipeline and
+    # the onemap cache speak those, while the DB CSVs carry INT ids
+    with HDB_CSV.open(encoding="utf-8-sig") as handle:
         block_coords = {
-            r["block_id"]: (float(r["longitude"]), float(r["latitude"]))
-            for r in csv.DictReader(handle)
+            f"B{index + 1:05d}": (float(r["lng"]), float(r["lat"]))
+            for index, r in enumerate(csv.DictReader(handle))
         }
     with HAWKER_CSV.open(encoding="utf-8-sig") as handle:
         hawker_coords = {
-            r["hawker_id"]: (float(r["longitude"]), float(r["latitude"]))
-            for r in csv.DictReader(handle)
+            f"H{index + 1:03d}": (float(r["longitude"]), float(r["latitude"]))
+            for index, r in enumerate(csv.DictReader(handle))
         }
 
-    # the proximity file is the authoritative pair list: exactly the set of
-    # pairs inside the 3000 m walking horizon, i.e. what the relation needs
-    with PAIRS_CSV.open(encoding="utf-8") as handle:
+    # the walk file is the authoritative pair list: exactly the set of pairs
+    # inside the 3000 m walking horizon, i.e. what the relation needs
+    with WALK_CSV.open(encoding="utf-8") as handle:
         pairs = list(csv.DictReader(handle))
     print(f"[pairs] {len(pairs)} materialised block-hawker pairs")
 

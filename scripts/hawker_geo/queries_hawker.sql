@@ -6,41 +6,44 @@
 
 -- Q4. Does walking distance to a hawker centre associate with resale price,
 -- once town and flat type are held fixed? 4 ROOM and 2020-01 onward only,
--- compared WITHIN town, HAVING n >= 30 per class so a median means something.
+-- compared WITHIN town, HAVING n >= 30 per level so a median means something.
 WITH priced AS (
-    SELECT t.town           AS town_name,
-           c.proximity_class,
+    SELECT tn.town_name,
+           pl.level_id,
            t.resale_price
     FROM   resale_transaction t
-    JOIN   hdb_block_proximity_class c ON c.block_id = t.block_id
-    WHERE  t.flat_type = '4 ROOM'
-      AND  t.month    >= '2020-01'
+    JOIN   hdb_flat f                   ON f.flat_id  = t.flat_id
+    JOIN   hdb_block b                  ON b.block_id = f.block_id
+    JOIN   town tn                      ON tn.town_id = b.town_id
+    JOIN   hdb_block_proximity_level pl ON pl.block_id = f.block_id
+    WHERE  f.flat_type = '4 ROOM'
+      AND  t.transaction_month >= DATE '2020-01-01'
 )
 SELECT pr.town_name,
        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pr.resale_price)
-             FILTER (WHERE pr.proximity_class = 1)) AS median_class1,
+             FILTER (WHERE pr.level_id = 1)) AS median_level1,
        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pr.resale_price)
-             FILTER (WHERE pr.proximity_class = 2)) AS median_class2,
+             FILTER (WHERE pr.level_id = 2)) AS median_level2,
        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY pr.resale_price)
-             FILTER (WHERE pr.proximity_class = 3)) AS median_class3,
-       COUNT(*) FILTER (WHERE pr.proximity_class = 1) AS n1,
-       COUNT(*) FILTER (WHERE pr.proximity_class = 2) AS n2,
-       COUNT(*) FILTER (WHERE pr.proximity_class = 3) AS n3
+             FILTER (WHERE pr.level_id = 3)) AS median_level3,
+       COUNT(*) FILTER (WHERE pr.level_id = 1) AS n1,
+       COUNT(*) FILTER (WHERE pr.level_id = 2) AS n2,
+       COUNT(*) FILTER (WHERE pr.level_id = 3) AS n3
 FROM   priced pr
 GROUP  BY pr.town_name
-HAVING COUNT(*) FILTER (WHERE pr.proximity_class = 1) >= 30
-   AND COUNT(*) FILTER (WHERE pr.proximity_class = 2) >= 30
-   AND COUNT(*) FILTER (WHERE pr.proximity_class = 3) >= 30
+HAVING COUNT(*) FILTER (WHERE pr.level_id = 1) >= 30
+   AND COUNT(*) FILTER (WHERE pr.level_id = 2) >= 30
+   AND COUNT(*) FILTER (WHERE pr.level_id = 3) >= 30
 -- tiebreaker is not cosmetic: BUKIT PANJANG and JURONG WEST both land on a
--- class-1 median of exactly S$490,000
-ORDER  BY median_class1 DESC, pr.town_name;
+-- level-1 median of exactly S$490,000
+ORDER  BY median_level1 DESC, pr.town_name;
 
 -- Verified result: 21 of 26 towns survive. The result is NOT monotone - in
--- most towns class 2 is cheaper than class 1, but class 3 often ticks back up:
+-- most towns level 2 is cheaper than level 1, but level 3 often ticks back up:
 -- "far from a hawker centre" is really "far from everything", a proxy for
 -- estate maturity rather than a clean proximity effect.
 --
---   town_name            median_class1  median_class2  median_class3     n1     n2     n3
+--   town_name            median_level1  median_level2  median_level3     n1     n2     n3
 --   BUKIT MERAH                880,000        765,000        833,000    862  1,475    271
 --   TOA PAYOH                  860,000        822,500        580,000    616  1,018    356
 --   QUEENSTOWN                 790,000        870,000        850,000    373    986    663
@@ -64,31 +67,36 @@ ORDER  BY median_class1 DESC, pr.town_name;
 --   JURONG EAST                456,500        469,000        521,052     58    540    428
 --
 -- Fractional medians (748,388 / 719,888 / 495,944 / 508,888 / 521,052) are
--- correct: those towns have an even number of transactions in that class, so
+-- correct: those towns have an even number of transactions in that level, so
 -- PERCENTILE_CONT interpolates between the two middle prices.
 
--- Q4 diagnostic. Which towns dropped out, and was it because the class is
+-- Q4 diagnostic. Which towns dropped out, and was it because the level is
 -- structurally empty or merely too thin to summarise? ("21 of 26" looks like
 -- data loss; it is not.)
 WITH priced AS (
-    SELECT t.town AS town_name, c.proximity_class, t.resale_price
+    SELECT tn.town_name,
+           pl.level_id,
+           t.resale_price
     FROM   resale_transaction t
-    JOIN   hdb_block_proximity_class c ON c.block_id = t.block_id
-    WHERE  t.flat_type = '4 ROOM'
-      AND  t.month    >= '2020-01'
+    JOIN   hdb_flat f                   ON f.flat_id  = t.flat_id
+    JOIN   hdb_block b                  ON b.block_id = f.block_id
+    JOIN   town tn                      ON tn.town_id = b.town_id
+    JOIN   hdb_block_proximity_level pl ON pl.block_id = f.block_id
+    WHERE  f.flat_type = '4 ROOM'
+      AND  t.transaction_month >= DATE '2020-01-01'
 ),
 counts AS (
     SELECT town_name,
-           COUNT(*) FILTER (WHERE proximity_class = 1) AS n1,
-           COUNT(*) FILTER (WHERE proximity_class = 2) AS n2,
-           COUNT(*) FILTER (WHERE proximity_class = 3) AS n3
+           COUNT(*) FILTER (WHERE level_id = 1) AS n1,
+           COUNT(*) FILTER (WHERE level_id = 2) AS n2,
+           COUNT(*) FILTER (WHERE level_id = 3) AS n3
     FROM   priced
     GROUP  BY town_name
 )
 SELECT c.town_name, c.n1, c.n2, c.n3,
        CASE
-           WHEN c.n1 = 0 OR c.n2 = 0 OR c.n3 = 0 THEN 'structural: class empty'
-           ELSE 'thin: class too small'
+           WHEN c.n1 = 0 OR c.n2 = 0 OR c.n3 = 0 THEN 'structural: level empty'
+           ELSE 'thin: level too small'
        END AS why_excluded
 FROM   counts c
 WHERE  LEAST(c.n1, c.n2, c.n3) < 30
@@ -96,25 +104,25 @@ ORDER  BY LEAST(c.n1, c.n2, c.n3), c.town_name;
 
 -- Verified result (5 rows):
 --   town_name        n1    n2    n3   why_excluded
---   BUKIT TIMAH      47    96     0   structural: class empty   (n3 = 0)
---   MARINE PARADE    82   169     0   structural: class empty   (n3 = 0)
---   PUNGGOL           0   770  6144   structural: class empty   (n1 = 0)
---   SERANGOON          0     0  1291   structural: class empty   (n1 = n2 = 0)
---   CENTRAL AREA    440    80    10   thin: class too small     (n3 = 10)
+--   BUKIT TIMAH      47    96     0   structural: level empty   (n3 = 0)
+--   MARINE PARADE    82   169     0   structural: level empty   (n3 = 0)
+--   PUNGGOL           0   770  6144   structural: level empty   (n1 = 0)
+--   SERANGOON          0     0  1291   structural: level empty   (n1 = n2 = 0)
+--   CENTRAL AREA    440    80    10   thin: level too small     (n3 = 10)
 
 -- Q5. Does having a fresh market within a 1 km walk associate with price?
 -- "Has a fresh market" = no_of_mkt_produce_stalls > 0 from the official stall
 -- register, NOT the centre's name (only 20 of 107 named centres contain the
--- word "market"). The 22 centres with NULL stall counts are excluded here
+-- word "market"). The 23 centres with NULL stall counts are excluded here
 -- (strict); the sensitivity variant below treats them as having one.
 WITH block_fresh AS (
     SELECT b.block_id,
            EXISTS (
                SELECT 1
-               FROM   hawker_proximity p
+               FROM   proximity p
                JOIN   hawker_centre    h ON h.hawker_id = p.hawker_id
                WHERE  p.block_id = b.block_id
-                 AND  p.walk_distance_m <= 1000
+                 AND  p.distance_m <= 1000
                  AND  h.no_of_mkt_produce_stalls > 0
            ) AS has_fresh_market_nearby
     FROM   hdb_block b
@@ -124,9 +132,10 @@ SELECT f.has_fresh_market_nearby,
        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.resale_price)) AS median_price,
        ROUND(AVG(t.resale_price))                                        AS mean_price
 FROM   resale_transaction t
-JOIN   block_fresh f ON f.block_id = t.block_id
-WHERE  t.flat_type = '4 ROOM'
-  AND  t.month    >= '2020-01'
+JOIN   hdb_flat fl   ON fl.flat_id  = t.flat_id
+JOIN   block_fresh f ON f.block_id  = fl.block_id
+WHERE  fl.flat_type = '4 ROOM'
+  AND  t.transaction_month >= DATE '2020-01-01'
 GROUP  BY f.has_fresh_market_nearby
 ORDER  BY f.has_fresh_market_nearby DESC;
 
@@ -136,7 +145,7 @@ ORDER  BY f.has_fresh_market_nearby DESC;
 --   false                   | 59,241 |      536,000 |    553,663
 --   -> median gap +14.7%, mean gap +20.3%
 
--- Q5 sensitivity. Same query, but the 22 attribute-unknown centres are treated
+-- Q5 sensitivity. Same query, but the 23 attribute-unknown centres are treated
 -- as having a fresh market (the optimistic bound). The gap collapses from
 -- +14.7% to +5.0%: two thirds of the measured premium depends on an assumption
 -- about 22 centres we have no stall data for. Report both numbers - do not
@@ -145,10 +154,10 @@ WITH block_fresh AS (
     SELECT b.block_id,
            EXISTS (
                SELECT 1
-               FROM   hawker_proximity p
+               FROM   proximity p
                JOIN   hawker_centre    h ON h.hawker_id = p.hawker_id
                WHERE  p.block_id = b.block_id
-                 AND  p.walk_distance_m <= 1000
+                 AND  p.distance_m <= 1000
                  AND  (h.no_of_mkt_produce_stalls > 0
                        OR h.no_of_mkt_produce_stalls IS NULL)
            ) AS has_fresh_market_nearby
@@ -159,9 +168,10 @@ SELECT f.has_fresh_market_nearby,
        ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY t.resale_price)) AS median_price,
        ROUND(AVG(t.resale_price))                                        AS mean_price
 FROM   resale_transaction t
-JOIN   block_fresh f ON f.block_id = t.block_id
-WHERE  t.flat_type = '4 ROOM'
-  AND  t.month    >= '2020-01'
+JOIN   hdb_flat fl   ON fl.flat_id  = t.flat_id
+JOIN   block_fresh f ON f.block_id  = fl.block_id
+WHERE  fl.flat_type = '4 ROOM'
+  AND  t.transaction_month >= DATE '2020-01-01'
 GROUP  BY f.has_fresh_market_nearby
 ORDER  BY f.has_fresh_market_nearby DESC;
 
@@ -176,23 +186,23 @@ ORDER  BY f.has_fresh_market_nearby DESC;
 WITH block_flags AS (
     SELECT b.block_id,
            EXISTS (
-               SELECT 1 FROM hawker_proximity p
+               SELECT 1 FROM proximity p
                JOIN   hawker_centre h ON h.hawker_id = p.hawker_id
                WHERE  p.block_id = b.block_id
-                 AND  p.walk_distance_m <= 3000
+                 AND  p.distance_m <= 3000
                  AND  h.no_of_mkt_produce_stalls > 0
            ) AS has_known_market,
            EXISTS (
-               SELECT 1 FROM hawker_proximity p
+               SELECT 1 FROM proximity p
                JOIN   hawker_centre h ON h.hawker_id = p.hawker_id
                WHERE  p.block_id = b.block_id
-                 AND  p.walk_distance_m <= 3000
+                 AND  p.distance_m <= 3000
                  AND  h.no_of_mkt_produce_stalls IS NULL
            ) AS has_unknown_centre,
            EXISTS (
-               SELECT 1 FROM hawker_proximity p
+               SELECT 1 FROM proximity p
                WHERE  p.block_id = b.block_id
-                 AND  p.walk_distance_m <= 3000
+                 AND  p.distance_m <= 3000
            ) AS has_any_centre
     FROM   hdb_block b
 )
