@@ -1,12 +1,12 @@
 -- Q4: Hawker Centre Proximity Effect
--- Price differential between NEAR (proximity_class=1, <=500m)
--- and FAR (proximity_class=3, >1000m) hawker proximity classes.
--- Uses the closest hawker per block (MIN proximity_class).
+-- Price differential between NEAR (level_id=1, <=800m)
+-- and FAR (level_id=3, >2000m) hawker proximity levels.
+-- Uses the closest hawker per block (MIN level_id).
 
-WITH block_class AS (
+WITH block_level AS (
     SELECT block_id,
-           MIN(proximity_class) AS proximity_class
-    FROM   hawker_proximity
+           MIN(level_id) AS level_id
+    FROM   proximity
     GROUP  BY block_id
 ),
 near_prices AS (
@@ -14,11 +14,11 @@ near_prices AS (
            f.flat_type,
            AVG(rt.resale_price) AS avg_price_near
     FROM   resale_transaction rt
-    JOIN   hdb_flat f   ON rt.flat_id  = f.flat_id
-    JOIN   hdb_block b  ON f.block_id  = b.block_id
-    JOIN   town t       ON b.town_id   = t.town_id
-    JOIN   block_class c ON b.block_id = c.block_id
-    WHERE  c.proximity_class = 1
+    JOIN   hdb_flat f    ON rt.flat_id  = f.flat_id
+    JOIN   hdb_block b   ON f.block_id  = b.block_id
+    JOIN   town t        ON b.town_id   = t.town_id
+    JOIN   block_level c ON b.block_id  = c.block_id
+    WHERE  c.level_id = 1
     GROUP  BY t.town_name, f.flat_type
 ),
 far_prices AS (
@@ -26,11 +26,11 @@ far_prices AS (
            f.flat_type,
            AVG(rt.resale_price) AS avg_price_far
     FROM   resale_transaction rt
-    JOIN   hdb_flat f   ON rt.flat_id  = f.flat_id
-    JOIN   hdb_block b  ON f.block_id  = b.block_id
-    JOIN   town t       ON b.town_id   = t.town_id
-    JOIN   block_class c ON b.block_id = c.block_id
-    WHERE  c.proximity_class = 3
+    JOIN   hdb_flat f    ON rt.flat_id  = f.flat_id
+    JOIN   hdb_block b   ON f.block_id  = b.block_id
+    JOIN   town t        ON b.town_id   = t.town_id
+    JOIN   block_level c ON b.block_id  = c.block_id
+    WHERE  c.level_id = 3
     GROUP  BY t.town_name, f.flat_type
 )
 SELECT np.town_name,
