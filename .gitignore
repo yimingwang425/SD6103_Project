@@ -29,3 +29,10 @@ tools/
 data/hawker_geo/hdb_hawker_walk.csv
 data/hawker_geo/onemap_cache.jsonl
 data/hawker_geo/hdb_hawker_walk_onemap.csv
+
+# Hawker-geo: audit byproducts. Each rebuilds in seconds from the committed
+# caches above (rerun 03, or 04 --engine onemap --merge-only); their summaries
+# live in the report, so the per-row CSVs stay local.
+data/hawker_geo/method_comparison.csv
+data/hawker_geo/hdb_block_nearest.csv
+data/hawker_geo/onemap_distances.csv
