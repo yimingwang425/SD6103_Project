@@ -1,41 +1,9 @@
 #!/usr/bin/env python3
 """
 02_validate_distances.py - cross-check the OSRM walking distances from
-the walk stage of 01_build_proximity.py against independent routing
-engines, and re-route the whole relation through OneMap when asked to.
-
-Sample cross-check (a few hundred pairs, stratified by distance so the short
-walks - where the 500/1000 m class boundaries are - stay represented):
-
-    python 02_validate_distances.py --engine valhalla --samples 30
-    ONEMAP_TOKEN=... python 02_validate_distances.py --engine onemap --samples 300
-
---engine valhalla  another OSM-based engine, different implementation
-                   (10x10 matrix requests, ~1 min)
---engine onemap    OneMap, SLA's national network - different data provenance,
-                   not OSM at all. Token from
-                   https://www.onemap.gov.sg/api/auth/post/getToken, read from
-                   the ONEMAP_TOKEN environment variable
-
-Full OneMap re-route (every pair; OneMap has no matrix endpoint, so this is
-one request per pair, ~7-8 h, resumable):
-
-    export ONEMAP_TOKEN='...'
-    python 02_validate_distances.py --engine onemap --full
-    python 02_validate_distances.py --engine onemap --full --merge-only
-
-Why re-route instead of patching: the sample check showed the two engines
-disagree in a specific way - on short pairs OSRM is sometimes 3-5x the
-straight-line distance (206 m apart -> OSRM 1,022 m, OneMap 266 m), which
-looks like OSRM snapping the origin to the wrong side of an expressway or
-canal. Patching only the broken pairs would leave one dataset built from two
-cost models; re-routing everything keeps one engine, one definition. The
-merge step adds the OSRM snap offset back onto the OneMap value (door-to-door
-vs snapped-endpoint), preserving the raw number in onemap_raw_m for auditing.
-
-Outputs (data/hawker_geo/): router_validation.csv / onemap_validation.csv
-(sample modes), onemap_distances.csv + hdb_hawker_walk_onemap.csv (full mode,
-a drop-in replacement for the derive stage's WALK_CSV).
+01_build_proximity.py against independent engines (--engine valhalla |
+onemap --samples N), or re-route every pair through OneMap
+(--engine onemap --full, needs ONEMAP_TOKEN).
 """
 
 from __future__ import annotations
@@ -595,11 +563,14 @@ def run_onemap_full(pairs, args):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--engine", choices=("valhalla", "onemap"), required=True)
-    parser.add_argument("--samples", type=int, default=30)
+    parser.add_argument("--engine", choices=("valhalla", "onemap"), required=True,
+                        help="routing engine to cross-check / re-route with")
+    parser.add_argument("--samples", type=int, default=30,
+                        help="sample mode: how many pairs (stratified by distance)")
     parser.add_argument("--full", action="store_true",
                         help="onemap only: re-route every pair, not a sample")
-    parser.add_argument("--workers", type=int, default=WORKERS)
+    parser.add_argument("--workers", type=int, default=WORKERS,
+                        help="onemap --full: parallel request threads")
     parser.add_argument("--merge-only", action="store_true",
                         help="onemap --full only: skip fetching, rebuild the CSVs from the cache")
     args = parser.parse_args()

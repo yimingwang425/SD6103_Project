@@ -1,17 +1,10 @@
 #!/usr/bin/env python3
 """
 01_build_proximity.py - build the hawker-proximity dataset in three
-independently re-runnable stages (--stage clean|walk|derive|all):
-
-  clean   Raw hawker_geo.csv -> data/clean_data/hawker_centre.csv
-          (stall counts joined from the cached official register).
-  walk    OSRM foot routing for every block-centre pair (~37 min cold,
-          seconds with the committed cache; resumable).
-  derive  -> data/clean_data/proximity.csv + proximity_level.csv.
-
-Proximity (walking distance): level 1 <=500 m, 2 <=1000 m, 3 >1000 m.
-The relation CSV carries natural keys (blk_no, street / hawker_name);
-the database resolves surrogate ids on them at load time (sp06-sp08).
+stages (--stage clean|walk|derive|all): clean the raw export into
+data/clean_data/hawker_centre.csv, OSRM-foot-route every block-centre
+pair, then derive proximity.csv + proximity_level.csv (walking bands
+1 <=500 m, 2 <=1000 m, 3 >1000 m; natural keys, sp06-sp08 resolve ids).
 """
 
 from __future__ import annotations

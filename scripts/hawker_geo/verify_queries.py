@@ -1,13 +1,6 @@
 #!/usr/bin/env python3
-"""Re-implement Q4/Q5 in plain Python so the numbers quoted in the SQL
-comments can be checked without a running PostgreSQL server.
-
-Reads the team's cleaned data (data/clean_data/) and mirrors what the stored
-procedures load: only blocks present in hdb_block_clean_YM.csv, only flats
-whose six-field identity exists, only transactions whose block matched.
-
-percentile_cont(0.5) interpolates linearly, which for an even-sized sample is
-exactly the mean of the two middle values -- i.e. statistics.median().
+"""Re-implement Q4/Q5 in plain Python from data/clean_data/ so the numbers
+in queries_hawker.sql can be checked without a PostgreSQL server.
 """
 from __future__ import annotations
 

@@ -1,8 +1,5 @@
--- queries_hawker.sql - Q4 / Q5 plus the two diagnostics that keep them honest.
--- Prerequisite: the schema is loaded (sp01) and the tables are populated
--- (sp02-sp08). Each query carries its verified result underneath, so a reviewer
--- can tell whether their own run matches. verify_queries.py re-computes the
--- same numbers from the committed CSVs without a database.
+-- queries_hawker.sql - Q4 / Q5 plus two diagnostics. Each query carries
+-- its verified result underneath; verify_queries.py recomputes them from the CSVs.
 
 -- Q4. Does walking distance to a hawker centre associate with resale price,
 -- once town and flat type are held fixed? 4 ROOM and 2020-01 onward only,
