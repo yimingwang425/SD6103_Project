@@ -13,20 +13,17 @@ HERE = Path(__file__).resolve().parents[2]
 CLEAN = HERE / "data" / "clean_data"
 RESALE_DIR = CLEAN / "resale"
 
-
 def read(path):
     with path.open(encoding="utf-8-sig", newline="") as fh:
         return list(csv.DictReader(fh))
 
-
-# ---------------------------------------------------------------- load
-blocks = read(CLEAN / "hdb_block_clean_YM.csv")          # 10,194 rows
+blocks = read(CLEAN / "hdb_block_clean_YM.csv")
 town_of = {(b["blk_no"], b["street_name"] if "street_name" in b else b["street"]):
            b["town_name"] for b in blocks}
 block_keys = set(town_of)
 
-hawker = read(CLEAN / "hawker_centre.csv")               # 129 rows
-prox = read(CLEAN / "proximity.csv")                     # 63,340 rows
+hawker = read(CLEAN / "hawker_centre.csv")
+prox = read(CLEAN / "proximity.csv")
 
 resale = []
 for i in range(1, 6):
@@ -34,11 +31,9 @@ for i in range(1, 6):
 print(f"[load] {len(resale):,} transactions, {len(block_keys):,} blocks, "
       f"{len(prox):,} proximity pairs")
 
-# sp08 skips pairs whose block is not in hdb_block; mirror that here
 prox = [p for p in prox if (p["blk_no"], p["street"]) in block_keys]
 print(f"[load] {len(prox):,} pairs on blocks present in hdb_block")
 
-# hdb_block_proximity_level: MIN(level_id), MIN(distance_m) per block
 level: dict[tuple[str, str], int] = {}
 for p in prox:
     key = (p["blk_no"], p["street"])
@@ -46,7 +41,6 @@ for p in prox:
     if key not in level or lv < level[key]:
         level[key] = lv
 
-# ---------------------------------------------------------------- Q4
 priced = defaultdict(lambda: defaultdict(list))  # town -> level -> prices
 for t in resale:
     year, month = int(t["month"][:4]), int(t["month"][5:7])
@@ -55,16 +49,16 @@ for t in resale:
     if t["flat_type"] != "4 ROOM":
         continue
     key = (t["block"], t["street_name"])
-    if key not in block_keys:            # INNER JOIN drops unmatched blocks
+    if key not in block_keys:
         continue
-    if key not in level:                 # no proximity row (cannot happen after the filter above)
+    if key not in level:
         continue
     priced[town_of[key]][level[key]].append(float(t["resale_price"]))
 
 rows = []
 for town, by_level in priced.items():
     counts = {c: len(by_level.get(c, [])) for c in (1, 2, 3)}
-    if min(counts.values()) < 30:          # HAVING n >= 30 for every level
+    if min(counts.values()) < 30:
         continue
     med = {c: round(statistics.median(by_level[c])) for c in (1, 2, 3)}
     rows.append((town, med, counts))
@@ -84,8 +78,6 @@ for town in dropped:
     missing = [f"level {c}" for c in (1, 2, 3) if counts[c] < 30]
     print(f"  {town:<14} n={counts}  fails: {', '.join(missing)}")
 
-# ---------------------------------------------------------------- Q5
-# block_fresh: does the block have a fresh-market centre within 1000 m?
 market = {h["hawker_name"]: (h["no_of_mkt_produce_stalls"] not in ("", None)
                              and int(h["no_of_mkt_produce_stalls"]) > 0)
           for h in hawker}
@@ -101,7 +93,6 @@ for p in prox:
             fresh_near[key] = True
         if p["hawker_name"] in unknown:
             unknown_near.add(key)
-
 
 def q5(strict: bool) -> dict[bool, tuple[int, float, float]]:
     """strict=True  -> only centres with known produce stalls count
@@ -124,7 +115,6 @@ def q5(strict: bool) -> dict[bool, tuple[int, float, float]]:
     return {k: (len(v), round(statistics.median(v)), round(sum(v) / len(v)))
             for k, v in buckets.items()}
 
-
 for label, strict in (("Q5 strict ", True), ("Q5 lenient", False)):
     res = q5(strict)
     yes, no = res[True], res[False]
@@ -133,7 +123,6 @@ for label, strict in (("Q5 strict ", True), ("Q5 lenient", False)):
     print(f"{'':11}  no market   n={no[0]:>7,}  median={no[1]:>9,.0f}  mean={no[2]:>9,.0f}")
     print(f"{'':11}  median gap  {gap:+.1f}%")
 
-# ---------------------------------------------------------------- coverage
 covered = {(p["blk_no"], p["street"]) for p in prox
            if float(p["distance_m"]) <= 3000 and market.get(p["hawker_name"], False)}
 unknown_only = {(p["blk_no"], p["street"]) for p in prox
