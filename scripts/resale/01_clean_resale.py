@@ -1,25 +1,24 @@
 """
-Step 1 of 2: Data Cleaning for HDB Resale Transaction Data
-==========================================================
+Step 1: Data Cleaning for HDB Resale Transaction Data
+=====================================================
 
 Purpose:
-    Clean raw HDB resale CSV files from data.gov.sg. This script handles
-    format inconsistencies across the 5 raw files and outputs one cleaned
-    CSV per file, preserving all valid rows.
+    Clean raw HDB resale CSV files from data.gov.sg. Handles format
+    inconsistencies across 5 raw files; outputs one cleaned CSV per file.
 
 Input:
     5 raw CSV files under data/raw_data/ResaleFlatPrices/
-    The files have different schemas:
-      - Files 1,2,4 (1990-1999, 2000-2012, 2012-2014): no remaining_lease column
-      - File 3 (2015-2016): remaining_lease as integer (e.g. 70)
-      - File 5 (2017-onwards): remaining_lease as string (e.g. "61 years 04 months")
+    Schema differences:
+      - 1990-1999, 2000-2012, 2012-2014: no remaining_lease column
+      - 2015-2016: remaining_lease as integer (e.g. 70)
+      - 2017-onwards: remaining_lease as string (e.g. "61 years 04 months")
 
 Output:
     data/src/resale/cleaned/
-      file1_cleaned.csv  (2015-2016)
-      file2_cleaned.csv  (2012-2014)
-      file3_cleaned.csv  (1990-1999)
-      file4_cleaned.csv  (2000-2012)
+      file1_cleaned.csv  (1990-1999)    <- chronological order
+      file2_cleaned.csv  (2000-2012)
+      file3_cleaned.csv  (2012-2014)
+      file4_cleaned.csv  (2015-2016)
       file5_cleaned.csv  (2017-onwards)
       removed.csv        (all rows removed with reasons)
 
@@ -28,27 +27,24 @@ Output:
       floor_area_sqm, flat_model, lease_commence_date, remaining_lease_years,
       resale_price
 
-Transformations applied:
-    1. flat_type: "MULTI GENERATION" -> "MULTI-GENERATION"
-    2. flat_model: title-cased, with special handling for "DBSS" and "3Gen"
+Transformations:
+    1. All string columns: stripped and UPPERCASED (to match hdb_block data)
+    2. flat_type: "MULTI GENERATION" -> "MULTI-GENERATION"
     3. storey_range: split "10 TO 12" into storey_min=10, storey_max=12
     4. remaining_lease: unified to integer years
        - Missing: computed as 99 - transaction_year + lease_commence_date
        - Integer: used directly
        - String ("61 years 04 months"): parsed, months truncated
-    5. resale_price: converted to integer (some files have float values)
-    6. All string columns: stripped and uppercased
+    5. resale_price: converted to integer
 
 Rows removed (with reason logged):
-    - remaining_lease fails to parse -> removal_reason = "remaining_lease parse failed"
-    - remaining_lease_years > 99    -> removal_reason = "remaining_lease > 99"
-    - storey_range fails to split   -> removal_reason = "storey_range parse failed"
-
-Dependencies:
-    None (only uses raw data files)
+    - remaining_lease fails to parse -> "remaining_lease parse failed"
+    - remaining_lease_years > 99     -> "remaining_lease > 99"
+    - storey_range fails to split    -> "storey_range parse failed"
 
 Run:
-    python data/src/resale/clean.py
+    cd <project_root>
+    python scripts/resale/01_clean_resale.py
 """
 
 import csv
@@ -56,17 +52,17 @@ import os
 import re
 
 # ── Paths ──
-BASE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-RAW_DIR = os.path.join(BASE, "raw_data", "ResaleFlatPrices")
-OUT_DIR = os.path.join(BASE, "src", "resale", "cleaned")
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+RAW_DIR = os.path.join(PROJECT_ROOT, "data", "raw_data", "ResaleFlatPrices")
+OUT_DIR = os.path.join(PROJECT_ROOT, "data", "clean_data", "resale")
 os.makedirs(OUT_DIR, exist_ok=True)
 
-# 5 raw files in loading order (smallest first, as recommended by project guide)
+# 5 raw files in CHRONOLOGICAL order (File1=oldest, File5=newest)
 RAW_FILES = [
-    "Resale Flat Prices (Based on Registration Date), From Jan 2015 to Dec 2016.csv",
-    "Resale Flat Prices (Based on Registration Date), From Mar 2012 to Dec 2014.csv",
     "Resale Flat Prices (Based on Approval Date), 1990 - 1999.csv",
     "Resale Flat Prices (Based on Approval Date), 2000 - Feb 2012.csv",
+    "Resale Flat Prices (Based on Registration Date), From Mar 2012 to Dec 2014.csv",
+    "Resale Flat Prices (Based on Registration Date), From Jan 2015 to Dec 2016.csv",
     "Resale flat prices based on registration date from Jan-2017 onwards.csv",
 ]
 
@@ -79,12 +75,7 @@ OUT_COLUMNS = [
 
 # ── Helpers ──
 def parse_remaining_lease(val, month_str, lease_commence):
-    """Convert remaining_lease to integer years.
-    - Missing/empty: compute from 99 - txn_year + lease_commence_date
-    - Integer string: return as int
-    - "61 years 04 months": parse and return years portion
-    - Unparseable: return None
-    """
+    """Convert remaining_lease to integer years."""
     if val is None or str(val).strip() == "":
         txn_year = int(month_str[:4])
         return 99 - txn_year + int(lease_commence)
@@ -101,15 +92,13 @@ def clean_row(row):
     """Clean a single raw row.
     Returns (cleaned_dict, None) on success, or (None, reason) on failure.
     """
-    # flat_type: standardise
+    # flat_type: uppercase + fix "MULTI GENERATION"
     flat_type = row["flat_type"].strip().upper()
     if flat_type == "MULTI GENERATION":
-        flat_type = "multi_generation"
+        flat_type = "MULTI-GENERATION"
 
-    # flat_model: title case with special handling
-    flat_model = row["flat_model"].strip().title()
-    if flat_model == "Dbss":
-        flat_model = "dbss"
+    # flat_model: uppercase
+    flat_model = row["flat_model"].strip().upper()
 
     # storey_range: split into min/max
     parts = row["storey_range"].strip().split(" TO ")
@@ -127,10 +116,10 @@ def clean_row(row):
 
     cleaned = {
         "month":                  row["month"].strip(),
-        "town":                   row["town"].strip().lower(),
+        "town":                   row["town"].strip().upper(),
         "flat_type":              flat_type,
-        "block":                  str(row["block"]).strip().lower(),
-        "street_name":            row["street_name"].strip().lower(),
+        "block":                  str(row["block"]).strip().upper(),
+        "street_name":            row["street_name"].strip().upper(),
         "storey_min":             storey_min,
         "storey_max":             storey_max,
         "floor_area_sqm":         row["floor_area_sqm"].strip(),
@@ -163,7 +152,6 @@ for i, filename in enumerate(RAW_FILES, start=1):
             else:
                 cleaned_rows.append(result)
 
-    # Write cleaned CSV
     out_path = os.path.join(OUT_DIR, f"file{i}_cleaned.csv")
     with open(out_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=OUT_COLUMNS)
@@ -172,7 +160,7 @@ for i, filename in enumerate(RAW_FILES, start=1):
 
     print(f"\nFile {i}: {filename}")
     print(f"  Input:    {total} rows")
-    print(f"  Cleaned:  {len(cleaned_rows)} rows -> {out_path}")
+    print(f"  Cleaned:  {len(cleaned_rows)} rows")
     print(f"  Removed:  {bad} rows")
 
 # Write all removed rows
