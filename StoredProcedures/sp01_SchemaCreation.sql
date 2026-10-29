@@ -13,7 +13,6 @@ BEGIN
         DROP TABLE IF EXISTS public.proximity_level CASCADE;
         DROP TABLE IF EXISTS public.hdb_block CASCADE;
         DROP TABLE IF EXISTS public.town CASCADE;
-        DROP VIEW IF EXISTS public.hdb_block_proximity_level;
         RAISE NOTICE 'dropped existing tables (children first)';
     END IF;
 
@@ -117,29 +116,18 @@ BEGIN
     );
     RAISE NOTICE 'proximity_level schema created';
 
-    -- creating proximity schema; level is derived from distance_m by the view below, not stored (3NF)
+    -- creating proximity schema; each pair stores the walking band it falls in
     CREATE TABLE IF NOT EXISTS public.proximity (
-        block_id   INT          NOT NULL,
-        hawker_id  INT          NOT NULL,
-        distance_m NUMERIC(8,2) NOT NULL CHECK (distance_m > 0),
+        block_id   INT NOT NULL,
+        hawker_id  INT NOT NULL,
+        level_id   INT NOT NULL,
 
         CONSTRAINT pk_proximity PRIMARY KEY (block_id, hawker_id),
-        CONSTRAINT fk_prox_block FOREIGN KEY (block_id) REFERENCES public.hdb_block (block_id),
-        CONSTRAINT fk_prox_hawker FOREIGN KEY (hawker_id) REFERENCES public.hawker_centre (hawker_id)
+        CONSTRAINT fk_prox_block  FOREIGN KEY (block_id)  REFERENCES public.hdb_block (block_id),
+        CONSTRAINT fk_prox_hawker FOREIGN KEY (hawker_id) REFERENCES public.hawker_centre (hawker_id),
+        CONSTRAINT fk_prox_level  FOREIGN KEY (level_id)  REFERENCES public.proximity_level (level_id)
     );
     RAISE NOTICE 'proximity schema created';
-
-    -- a block's own level = the level of the nearest centre it can walk to
-    -- (what Q4 joins on); level_id derived by range join against the bands
-    CREATE OR REPLACE VIEW public.hdb_block_proximity_level AS
-    SELECT p.block_id,
-           MIN(pl.level_id)   AS level_id,
-           MIN(p.distance_m) AS nearest_distance_m
-    FROM   public.proximity p
-    JOIN   public.proximity_level pl
-           ON  p.distance_m > pl.distance_min_m
-           AND (pl.distance_max_m IS NULL OR p.distance_m <= pl.distance_max_m)
-    GROUP  BY p.block_id;
 
     RAISE NOTICE '--------------------------------------------';
     RAISE NOTICE 'schema built in %ms',

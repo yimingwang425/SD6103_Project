@@ -25,16 +25,6 @@ block_keys = set(town_of)
 hawker = read(CLEAN / "hawker_centre.csv")
 prox = read(CLEAN / "proximity.csv")
 
-bands = [(int(r["level_id"]), float(r["distance_min_m"]),
-          float(r["distance_max_m"]) if r["distance_max_m"] else None)
-         for r in read(CLEAN / "proximity_level.csv")]
-
-def level_of(distance_m):
-    for lid, lo, hi in bands:
-        if distance_m > lo and (hi is None or distance_m <= hi):
-            return lid
-    raise ValueError(f"no band covers {distance_m} m")
-
 resale = []
 for i in range(1, 6):
     resale.extend(read(RESALE_DIR / f"file{i}_cleaned.csv"))
@@ -47,7 +37,7 @@ print(f"[load] {len(prox):,} pairs on blocks present in hdb_block")
 level: dict[tuple[str, str], int] = {}
 for p in prox:
     key = (p["blk_no"], p["street"])
-    lv = level_of(float(p["distance_m"]))
+    lv = int(p["level_id"])
     if key not in level or lv < level[key]:
         level[key] = lv
 
@@ -98,7 +88,7 @@ fresh_near: dict[tuple[str, str], bool] = {k: False for k in block_keys}
 unknown_near: set[tuple[str, str]] = set()
 for p in prox:
     key = (p["blk_no"], p["street"])
-    if float(p["distance_m"]) <= 1000:
+    if int(p["level_id"]) <= 2:
         if market.get(p["hawker_name"], False):
             fresh_near[key] = True
         if p["hawker_name"] in unknown:
@@ -134,12 +124,10 @@ for label, strict in (("Q5 strict ", True), ("Q5 lenient", False)):
     print(f"{'':11}  median gap  {gap:+.1f}%")
 
 covered = {(p["blk_no"], p["street"]) for p in prox
-           if float(p["distance_m"]) <= 3000 and market.get(p["hawker_name"], False)}
+           if market.get(p["hawker_name"], False)}
 unknown_only = {(p["blk_no"], p["street"]) for p in prox
-                if float(p["distance_m"]) <= 3000
-                and p["hawker_name"] in unknown}
-no_centre = block_keys - {(p["blk_no"], p["street"]) for p in prox
-                          if float(p["distance_m"]) <= 3000}
+                if p["hawker_name"] in unknown}
+no_centre = block_keys - {(p["blk_no"], p["street"]) for p in prox}
 print(f"\ncoverage: {len(block_keys) - len(covered):,} of {len(block_keys):,} blocks "
       f"({(len(block_keys) - len(covered)) / len(block_keys) * 100:.1f}%) have no known "
       f"fresh-market centre within 3 km")

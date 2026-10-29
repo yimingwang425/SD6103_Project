@@ -87,16 +87,16 @@ def derive_proximity() -> None:
         pairs = list(csv.DictReader(handle))
     print(f"[load] {len(pairs)} routed block-hawker pairs")
 
-    # write the relation: natural keys, sp08 resolves the ids; the level is
-    # derived from distance_m at query time, not stored
+    # write the relation: natural keys, sp08 resolves the ids; each pair
+    # carries the walking band it falls in
     relation_path = CLEAN_DIR / "proximity.csv"
     with relation_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["blk_no", "street", "hawker_name", "distance_m"])
+        writer.writerow(["blk_no", "street", "hawker_name", "level_id"])
         for row in pairs:
             writer.writerow([
                 row["blk_no"], row["street"], hawker_name[row["hawker_id"]],
-                row["walk_distance_m"],
+                classify(float(row["walk_distance_m"])),
             ])
 
     # the three level bands (min, max]: a boundary distance belongs to the

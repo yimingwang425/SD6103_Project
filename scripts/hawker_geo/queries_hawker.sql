@@ -1,12 +1,18 @@
-WITH priced AS (
+WITH block_level AS (
+    SELECT block_id,
+           MIN(level_id) AS level_id
+    FROM   proximity
+    GROUP  BY block_id
+),
+priced AS (
     SELECT tn.town_name,
-           pl.level_id,
+           bl.level_id,
            t.resale_price
     FROM   resale_transaction t
-    JOIN   hdb_flat f                   ON f.flat_id  = t.flat_id
-    JOIN   hdb_block b                  ON b.block_id = f.block_id
-    JOIN   town tn                      ON tn.town_id = b.town_id
-    JOIN   hdb_block_proximity_level pl ON pl.block_id = f.block_id
+    JOIN   hdb_flat f      ON f.flat_id  = t.flat_id
+    JOIN   hdb_block b     ON b.block_id = f.block_id
+    JOIN   town tn         ON tn.town_id = b.town_id
+    JOIN   block_level bl  ON bl.block_id = f.block_id
     WHERE  f.flat_type = '4 ROOM'
       AND  (t.transaction_year, t.transaction_month) >= (2020, 1)
 )
@@ -27,15 +33,21 @@ HAVING COUNT(*) FILTER (WHERE pr.level_id = 1) >= 30
    AND COUNT(*) FILTER (WHERE pr.level_id = 3) >= 30
 ORDER  BY median_level1 DESC, pr.town_name;
 
-WITH priced AS (
+WITH block_level AS (
+    SELECT block_id,
+           MIN(level_id) AS level_id
+    FROM   proximity
+    GROUP  BY block_id
+),
+priced AS (
     SELECT tn.town_name,
-           pl.level_id,
+           bl.level_id,
            t.resale_price
     FROM   resale_transaction t
-    JOIN   hdb_flat f                   ON f.flat_id  = t.flat_id
-    JOIN   hdb_block b                  ON b.block_id = f.block_id
-    JOIN   town tn                      ON tn.town_id = b.town_id
-    JOIN   hdb_block_proximity_level pl ON pl.block_id = f.block_id
+    JOIN   hdb_flat f      ON f.flat_id  = t.flat_id
+    JOIN   hdb_block b     ON b.block_id = f.block_id
+    JOIN   town tn         ON tn.town_id = b.town_id
+    JOIN   block_level bl  ON bl.block_id = f.block_id
     WHERE  f.flat_type = '4 ROOM'
       AND  (t.transaction_year, t.transaction_month) >= (2020, 1)
 ),
@@ -63,7 +75,7 @@ WITH block_fresh AS (
                FROM   proximity p
                JOIN   hawker_centre    h ON h.hawker_id = p.hawker_id
                WHERE  p.block_id = b.block_id
-                 AND  p.distance_m <= 1000
+                 AND  p.level_id <= 2
                  AND  h.no_of_mkt_produce_stalls > 0
            ) AS has_fresh_market_nearby
     FROM   hdb_block b
@@ -87,7 +99,7 @@ WITH block_fresh AS (
                FROM   proximity p
                JOIN   hawker_centre    h ON h.hawker_id = p.hawker_id
                WHERE  p.block_id = b.block_id
-                 AND  p.distance_m <= 1000
+                 AND  p.level_id <= 2
                  AND  (h.no_of_mkt_produce_stalls > 0
                        OR h.no_of_mkt_produce_stalls IS NULL)
            ) AS has_fresh_market_nearby
@@ -111,20 +123,17 @@ WITH block_flags AS (
                SELECT 1 FROM proximity p
                JOIN   hawker_centre h ON h.hawker_id = p.hawker_id
                WHERE  p.block_id = b.block_id
-                 AND  p.distance_m <= 3000
                  AND  h.no_of_mkt_produce_stalls > 0
            ) AS has_known_market,
            EXISTS (
                SELECT 1 FROM proximity p
                JOIN   hawker_centre h ON h.hawker_id = p.hawker_id
                WHERE  p.block_id = b.block_id
-                 AND  p.distance_m <= 3000
                  AND  h.no_of_mkt_produce_stalls IS NULL
            ) AS has_unknown_centre,
            EXISTS (
                SELECT 1 FROM proximity p
                WHERE  p.block_id = b.block_id
-                 AND  p.distance_m <= 3000
            ) AS has_any_centre
     FROM   hdb_block b
 )
