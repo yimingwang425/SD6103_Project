@@ -28,7 +28,7 @@ import psycopg2
 # ── Config ──────────────────────────────────────────────────────
 DB_CONFIG = dict(
     dbname="sd6103_project",
-    user="wanjingli",
+    user="your_user_name",
     host="localhost",
     port=5432,
 )
