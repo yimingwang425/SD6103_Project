@@ -28,7 +28,7 @@ import psycopg2
 # ── Config ──────────────────────────────────────────────────────
 DB_CONFIG = dict(
     dbname="sd6103_project",
-    user="postgres",
+    user="wanjingli",
     host="localhost",
     port=5432,
 )
@@ -56,6 +56,19 @@ for i in range(1, 7):
         raw = sql_files[0].read_text(encoding="utf-8")
         QUERIES[f"Q{i}"] = raw
 
+# Q1 has 5 stage-specific queries (different 3-year ranges).
+# Split them so each stage runs only the matching Q1.
+Q1_STAGES = []
+q1_raw = QUERIES["Q1"]
+# Split on "-- ====== Stage" markers
+import re
+q1_blocks = re.split(r'-- ====== Stage \d', q1_raw)
+for block in q1_blocks:
+    # Extract only the SELECT statement
+    select_match = re.search(r'(SELECT[\s\S]+?;)', block)
+    if select_match:
+        Q1_STAGES.append(select_match.group(1))
+
 
 # ── Helpers ─────────────────────────────────────────────────────
 def get_conn():
@@ -71,7 +84,7 @@ def load_staging(conn, csv_path):
         CREATE TEMP TABLE staging (
             blk_no VARCHAR(10), street VARCHAR(200), flat_type VARCHAR(20),
             storey_min INTEGER, storey_max INTEGER,
-            floor_area_sqm NUMERIC(6,1), flat_model VARCHAR(30),
+            floor_area_sqm NUMERIC(6,1), flat_model VARCHAR(40),
             transaction_year INTEGER, transaction_month INTEGER,
             remaining_lease_years INTEGER, resale_price INTEGER
         )
@@ -84,31 +97,31 @@ def load_staging(conn, csv_path):
 
     # staging → hdb_flat (deduplicated, matched by text)
     cur.execute("""
-        INSERT INTO hdb_flat (block_id, flat_type, storey_min, storey_max,
+        INSERT INTO public.hdb_flat (block_id, flat_type, storey_min, storey_max,
                               floor_area_sqm, flat_model)
         SELECT DISTINCT b.block_id, s.flat_type, s.storey_min, s.storey_max,
                s.floor_area_sqm, s.flat_model
         FROM   staging s
-        JOIN   hdb_block b ON s.blk_no = b.block_number
-                          AND s.street = b.street
+        JOIN   public.hdb_block b ON s.blk_no = b.block_number
+                                 AND s.street = b.street
         ON CONFLICT DO NOTHING
     """)
 
     # staging → resale_transaction (matched by text → block_id → flat_id)
     cur.execute("""
-        INSERT INTO resale_transaction (flat_id, transaction_year, transaction_month,
+        INSERT INTO public.resale_transaction (flat_id, transaction_year, transaction_month,
                                         remaining_lease_years, resale_price)
         SELECT f.flat_id, s.transaction_year, s.transaction_month,
                s.remaining_lease_years, s.resale_price
         FROM   staging s
-        JOIN   hdb_block b ON s.blk_no = b.block_number
-                          AND s.street = b.street
-        JOIN   hdb_flat f  ON b.block_id = f.block_id
-                          AND s.flat_type = f.flat_type
-                          AND s.storey_min = f.storey_min
-                          AND s.storey_max = f.storey_max
-                          AND s.floor_area_sqm = f.floor_area_sqm
-                          AND s.flat_model = f.flat_model
+        JOIN   public.hdb_block b ON s.blk_no = b.block_number
+                                 AND s.street = b.street
+        JOIN   public.hdb_flat f  ON b.block_id = f.block_id
+                                 AND s.flat_type = f.flat_type
+                                 AND s.storey_min = f.storey_min
+                                 AND s.storey_max = f.storey_max
+                                 AND s.floor_area_sqm = f.floor_area_sqm
+                                 AND s.flat_model = f.flat_model
     """)
 
     cur.execute("DROP TABLE staging")
@@ -119,9 +132,9 @@ def load_staging(conn, csv_path):
 def get_table_counts(conn):
     """Return (flat_count, txn_count)."""
     cur = conn.cursor()
-    cur.execute("SELECT COUNT(*) FROM hdb_flat")
+    cur.execute("SELECT COUNT(*) FROM public.hdb_flat")
     flats = cur.fetchone()[0]
-    cur.execute("SELECT COUNT(*) FROM resale_transaction")
+    cur.execute("SELECT COUNT(*) FROM public.resale_transaction")
     txns = cur.fetchone()[0]
     cur.close()
     return flats, txns
@@ -150,8 +163,13 @@ def main():
     # Step 1: Truncate resale tables (keep town, hdb_block, hawker, proximity)
     print("Truncating hdb_flat and resale_transaction ...")
     cur = conn.cursor()
-    cur.execute("TRUNCATE resale_transaction, hdb_flat CASCADE")
+    cur.execute("TRUNCATE public.resale_transaction, public.hdb_flat CASCADE")
     conn.commit()
+    # Verify tables are empty
+    cur.execute("SELECT COUNT(*) FROM public.resale_transaction")
+    assert cur.fetchone()[0] == 0, "resale_transaction not empty after TRUNCATE"
+    cur.execute("SELECT COUNT(*) FROM public.hdb_flat")
+    assert cur.fetchone()[0] == 0, "hdb_flat not empty after TRUNCATE"
     cur.close()
     print("Done.\n")
 
@@ -171,6 +189,10 @@ def main():
 
         # Run Q1-Q6, each 5 times
         for qname, sql in QUERIES.items():
+            # Q1: use stage-specific query (different 3-year range per stage)
+            if qname == "Q1":
+                sql = Q1_STAGES[fi - 1]
+
             times = []
             for run in range(1, RUNS_PER_QUERY + 1):
                 ms = run_query_timed(conn, sql)
