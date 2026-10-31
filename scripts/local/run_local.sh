@@ -92,7 +92,7 @@ fi
 
 if ! "$PG_BIN_DIR/pg_isready" -q; then
     "$PG_BIN_DIR/pg_ctl" -D "$PGDATA_DIR" -l "$PGDATA_DIR/server.log" -w \
-        -o "-p $PGPORT -k $SOCK_DIR -c listen_addresses=''" start >/dev/null
+        -o "-p $PGPORT -k $SOCK_DIR -c listen_addresses=127.0.0.1" start >/dev/null
     echo "server started (log: $PGDATA_DIR/server.log)"
 fi
 
@@ -206,13 +206,16 @@ UNION ALL SELECT 'proximity',          count(*) FROM public.proximity;"
 
 cat <<EOF
 
-Done. Database "$DBNAME" on port $PGPORT, socket in $SOCK_DIR.
+Done. Database "$DBNAME" on port $PGPORT (127.0.0.1 and the socket in $SOCK_DIR).
 
-  $PSQL                       # opens psql in $DBNAME
-  $PSQL -c '\\dt'              # list tables
-  $PSQL -c '\\d+ proximity'    # describe one table
-  $PSQL -c 'SELECT * FROM proximity_level;'
-  $PSQL -f scripts/queries/Q4_hawker_proximity_effect.sql
+  ./scripts/local/psql.sh     # opens psql in $DBNAME
+  ./scripts/local/psql.sh -c '\\dt'                  # list tables
+  ./scripts/local/psql.sh -c '\\d proximity'          # one table's columns and keys
+  ./scripts/local/psql.sh -c 'TABLE proximity_level;'
+  ./scripts/local/psql.sh -f scripts/queries/Q4_hawker_proximity_effect.sql
+
+GUI clients connect to 127.0.0.1:$PGPORT, database "$DBNAME", user postgres,
+no password (pgAdmin/DBeaver/TablePlus).
 
 Start the server again later:  $PG_BIN_DIR/pg_ctl -D "$PGDATA_DIR" start
 Stop it:                       $PG_BIN_DIR/pg_ctl -D "$PGDATA_DIR" stop
