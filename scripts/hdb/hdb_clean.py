@@ -99,15 +99,17 @@ def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     for col in ["total_dwelling_units"] + SOLD_COLS + RENTAL_COLS:
         df[col] = df[col].astype("Int64")
 
-    # building: treat the string 'NIL' as missing (5045 rows) and collapse extra spaces.
+    # building: treat the string 'NIL' as missing (5045 rows), collapse extra spaces and uppercase.
+    # Uppercase after the missing-value check, otherwise the string 'nan' would become 'NAN' and be kept.
     df["building"] = (
         df["building"].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
     )
     df.loc[df["building"].isin(["NIL", "nan", ""]), "building"] = np.nan
+    df["building"] = df["building"].str.upper()
 
-    # addr: collapse extra spaces.
+    # addr: collapse extra spaces and uppercase.
     df["addr"] = (
-        df["addr"].astype(str).str.strip().str.replace(r"\s+", " ", regex=True)
+        df["addr"].astype(str).str.strip().str.replace(r"\s+", " ", regex=True).str.upper()
     )
 
     # postal: strip whitespace; 'NIL' -> NULL.
