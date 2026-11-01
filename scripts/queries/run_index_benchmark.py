@@ -46,6 +46,9 @@ CREATE_SQL = QUERY_DIR / "create_indexes.sql"
 
 BLOCKS = 6
 RUNS = 5
+FIGURE_WIDTH = 6.26          # inch — the text column of the report page
+FIGURE_HEIGHT = 3.05
+FIGURE_DPI = 300
 DROP_SQL = """
 DROP INDEX IF EXISTS idx_hdb_block_town;
 DROP INDEX IF EXISTS resale_transaction_flat_idx;
@@ -134,7 +137,10 @@ def plot(grouped: dict[tuple[str, str], list[float]]) -> None:
     base = [statistics.mean(grouped[("baseline", n)]) for n in names]
     idx = [statistics.mean(grouped[("indexed", n)]) for n in names]
 
-    fig, ax = plt.subplots(figsize=(9, 4.4), dpi=200)
+    # the figure is printed at the width of the text column (6.26 in), so it is
+    # drawn at exactly that width: the point sizes below are then the sizes the
+    # reader actually sees, instead of being scaled down from a wider canvas
+    fig, ax = plt.subplots(figsize=(FIGURE_WIDTH, FIGURE_HEIGHT), dpi=FIGURE_DPI)
     width = 0.38
     for offset, values, label, colour in ((-width / 2, base, "without Task-4 indexes", "#9aa0a6"),
                                           (width / 2, idx, "with Task-4 indexes", "#1f6feb")):
@@ -142,23 +148,25 @@ def plot(grouped: dict[tuple[str, str], list[float]]) -> None:
                       label=label, color=colour)
         for bar, value in zip(bars, values):
             ax.annotate(f"{value:,.0f}", (bar.get_x() + bar.get_width() / 2, value),
-                        ha="center", va="bottom", fontsize=7)
+                        ha="center", va="bottom", fontsize=7.0)
 
     for i, (before, after) in enumerate(zip(base, idx)):
         ax.annotate(f"{(after - before) / before * 100:+.0f}%", (i, max(before, after)),
-                    ha="center", va="bottom", fontsize=8, color="#c0392b", xytext=(0, 12),
+                    ha="center", va="bottom", fontsize=8.5, color="#c0392b", xytext=(0, 11),
                     textcoords="offset points")
 
     ax.set_ylim(0, max(max(base), max(idx)) * 1.18)
     ax.set_xticks(range(len(names)))
-    ax.set_xticklabels(names)
-    ax.set_ylabel("average runtime over 30 runs (ms)")
-    ax.set_title("Query runtime with and without the Task-4 indexes (976,714 transactions)")
-    ax.legend(frameon=False)
+    ax.set_xticklabels(names, fontsize=8.5)
+    ax.set_ylabel("average runtime over 30 runs (ms)", fontsize=8.5)
+    ax.set_title("Query runtime with and without the Task-4 indexes (976,714 transactions)",
+                 fontsize=9.5)
+    ax.tick_params(axis="y", labelsize=8.5)
+    ax.legend(frameon=False, fontsize=8.5, loc="upper right")
     ax.spines[["top", "right"]].set_visible(False)
     ax.grid(axis="y", alpha=0.25)
     ax.set_axisbelow(True)
-    fig.tight_layout()
+    fig.tight_layout(pad=0.4)
     out = RESULT_DIR / "index_benchmark.png"
     fig.savefig(out)
     print(f"plot -> {out}")
