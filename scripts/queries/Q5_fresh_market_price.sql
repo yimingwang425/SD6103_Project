@@ -1,7 +1,7 @@
 -- Q5: Town Level Price Near Fresh Market Hawkers
 -- Average resale price per proximity level for flats near hawkers
 -- with fresh market stalls. Filter towns where avg price > 400000 SGD.
--- level_id: 1=NEAR (<=800m), 2=MEDIUM (800-2000m), 3=FAR (>2000m)
+-- level_id: 1=NEAR (<=500m), 2=MID (500-1000m), 3=FAR (>1000m)
 
 SELECT t.town_name,
        pl.category AS proximity_category,

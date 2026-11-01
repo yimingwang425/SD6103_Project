@@ -1,6 +1,6 @@
 -- Q4: Hawker Centre Proximity Effect
--- Price differential between NEAR (level_id=1, <=800m)
--- and FAR (level_id=3, >2000m) hawker proximity levels.
+-- Price differential between NEAR (level_id=1, <=500m)
+-- and FAR (level_id=3, >1000m) hawker proximity levels.
 -- Uses the closest hawker per block (MIN level_id).
 
 WITH block_level AS (

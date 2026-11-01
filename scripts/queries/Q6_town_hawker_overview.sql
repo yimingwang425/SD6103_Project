@@ -1,6 +1,6 @@
 -- Q6: Town Hawker Density vs Resale Price Overview (Custom Query)
 -- For each town, compare the average resale price with the number of
--- nearby hawker centres (NEAR level, <=800m) and how many of those
+-- nearby hawker centres (NEAR level, <=500m) and how many of those
 -- have fresh market stalls.
 -- Joins ALL 7 tables: town, hdb_block, hdb_flat, resale_transaction,
 -- proximity, proximity_level, hawker_centre.

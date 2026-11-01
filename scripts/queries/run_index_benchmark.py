@@ -134,7 +134,7 @@ def plot(grouped: dict[tuple[str, str], list[float]]) -> None:
 
     fig, ax = plt.subplots(figsize=(9, 4.4), dpi=200)
     width = 0.38
-    for offset, values, label, colour in ((-width / 2, base, "no indexes", "#9aa0a6"),
+    for offset, values, label, colour in ((-width / 2, base, "without Task-4 indexes", "#9aa0a6"),
                                           (width / 2, idx, "with Task-4 indexes", "#1f6feb")):
         bars = ax.bar([i + offset for i in range(len(names))], values, width,
                       label=label, color=colour)
