@@ -49,8 +49,8 @@ BEGIN
 
 
     -- creating required indexes
-    CREATE INDEX IF NOT EXISTS idx_hdb_block_town ON public.hdb_block (town_id);
-    RAISE NOTICE 'indexes created';
+    -- CREATE INDEX IF NOT EXISTS idx_hdb_block_town ON public.hdb_block (town_id);
+    -- RAISE NOTICE 'indexes created';
 
     -- creating hdb_flat schema; resale rows have no unit number, so identical units collapse into one row
     CREATE TABLE IF NOT EXISTS public.hdb_flat (
@@ -84,10 +84,10 @@ BEGIN
         CONSTRAINT ck_txn_lease CHECK (remaining_lease_years BETWEEN 0 AND 99),
         CONSTRAINT ck_txn_price CHECK (resale_price > 0)
     );
-    CREATE INDEX IF NOT EXISTS resale_transaction_flat_idx
-        ON public.resale_transaction (flat_id);
-    CREATE INDEX IF NOT EXISTS resale_transaction_month_idx
-        ON public.resale_transaction (transaction_year, transaction_month);
+    -- CREATE INDEX IF NOT EXISTS resale_transaction_flat_idx
+    --     ON public.resale_transaction (flat_id);
+    -- CREATE INDEX IF NOT EXISTS resale_transaction_month_idx
+    --     ON public.resale_transaction (transaction_year, transaction_month);
     RAISE NOTICE 'resale_transaction schema created';
 
     -- creating hawker_centre schema; stall counts NULL for the 23 centres opened after the register snapshot
