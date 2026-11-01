@@ -35,7 +35,7 @@ BEGIN
         year_completed INT,
         latitude NUMERIC(9,6),
         longitude NUMERIC(9,6),
-        postal VARCHAR(6) UNIQUE,
+        postal VARCHAR(6),
 
         CONSTRAINT pk_hdb_block PRIMARY KEY (block_id),
         CONSTRAINT fk_block_town FOREIGN KEY (town_id) REFERENCES public.town (town_id),
@@ -97,7 +97,7 @@ BEGIN
         street                   VARCHAR(200),
         latitude                 NUMERIC(9,6) NOT NULL,
         longitude                NUMERIC(9,6) NOT NULL,
-        postal                   VARCHAR(6),
+        postal                   VARCHAR(6) UNIQUE,
         no_of_mkt_produce_stalls INT,
         no_of_cooked_food_stalls INT,
 
