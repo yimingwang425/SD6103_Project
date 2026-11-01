@@ -20,9 +20,9 @@ CLEAN_DIR = HERE / "data" / "clean_data"
 OUTDIR = HERE / "data" / "hawker_geo"
 HDB_CSV = HERE / "data" / "raw_data" / "hdb.csv"
 HAWKER_CSV = CLEAN_DIR / "hawker_centre.csv"
-WALK_CSV = OUTDIR / "hdb_hawker_walk.csv"
-# to build the OneMap variant instead, point WALK_CSV at
-# hdb_hawker_walk_onemap.csv (produced by 04_validate_distances.py --full)
+# OneMap walk routes (04_validate_distances.py --full); the OSRM variant
+# written by 02_walk_distances.py is hdb_hawker_walk.csv.
+WALK_CSV = OUTDIR / "hdb_hawker_walk_onemap.csv"
 
 CLASS1_MAX = 500.0
 CLASS2_MAX = 1000.0
@@ -82,7 +82,17 @@ def derive_proximity() -> None:
     }
     hawker_name = load_hawker_names()
 
-    # load the routed pairs
+    # load the routed pairs. hdb_hawker_walk_onemap.csv is gitignored on
+    # purpose: it rebuilds in seconds from the committed onemap_full.jsonl,
+    # with no token and no network calls.
+    if not WALK_CSV.exists():
+        sys.exit(
+            f"missing input: {WALK_CSV}\n"
+            "This file is gitignored because it rebuilds offline from the\n"
+            "committed routing cache. Run:\n"
+            "    python scripts/hawker_geo/04_validate_distances.py "
+            "--engine onemap --full --merge-only\n"
+        )
     with WALK_CSV.open(encoding="utf-8") as handle:
         pairs = list(csv.DictReader(handle))
     print(f"[load] {len(pairs)} routed block-hawker pairs")
