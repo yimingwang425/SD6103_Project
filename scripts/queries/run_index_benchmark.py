@@ -2,9 +2,11 @@
 """Task 4 - index benchmark.
 
 Measures Q1-Q6 on the full database twice: with the indexes of
-create_indexes.sql and without any non-constraint index. The two
+create_indexes.sql and without any non-constraint index. The primary-key and
+UNIQUE indexes stay in both configurations, so what is measured is the
+marginal effect of the four statements in create_indexes.sql. The two
 configurations are interleaved over six blocks of five runs, so that drift
-in machine load hits both equally; the report quotes the median of the 30
+in machine load hits both equally; the report quotes the average of the 30
 runs per configuration.
 
 Each query is timed on the statement that runs against the full data set
@@ -129,8 +131,8 @@ def plot(grouped: dict[tuple[str, str], list[float]]) -> None:
     import matplotlib.pyplot as plt
 
     names = [f"Q{i}" for i in range(1, 7)]
-    base = [statistics.median(grouped[("baseline", n)]) for n in names]
-    idx = [statistics.median(grouped[("indexed", n)]) for n in names]
+    base = [statistics.mean(grouped[("baseline", n)]) for n in names]
+    idx = [statistics.mean(grouped[("indexed", n)]) for n in names]
 
     fig, ax = plt.subplots(figsize=(9, 4.4), dpi=200)
     width = 0.38
@@ -150,7 +152,7 @@ def plot(grouped: dict[tuple[str, str], list[float]]) -> None:
     ax.set_ylim(0, max(max(base), max(idx)) * 1.18)
     ax.set_xticks(range(len(names)))
     ax.set_xticklabels(names)
-    ax.set_ylabel("median runtime over 30 runs (ms)")
+    ax.set_ylabel("average runtime over 30 runs (ms)")
     ax.set_title("Query runtime with and without the Task-4 indexes (976,714 transactions)")
     ax.legend(frameon=False)
     ax.spines[["top", "right"]].set_visible(False)
@@ -166,7 +168,7 @@ def replot() -> None:
     grouped: dict[tuple[str, str], list[float]] = {}
     with (RESULT_DIR / "index_benchmark_summary.csv").open(encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
-            grouped.setdefault((row["config"], row["query"]), []).append(float(row["median_ms"]))
+            grouped.setdefault((row["config"], row["query"]), []).append(float(row["avg_ms"]))
     plot(grouped)
 
 
