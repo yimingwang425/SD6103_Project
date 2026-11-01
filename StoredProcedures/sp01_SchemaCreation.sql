@@ -35,7 +35,7 @@ BEGIN
         year_completed INT,
         latitude NUMERIC(9,6),
         longitude NUMERIC(9,6),
-        postal VARCHAR(6),
+        postal VARCHAR(6) UNIQUE,
 
         CONSTRAINT pk_hdb_block PRIMARY KEY (block_id),
         CONSTRAINT fk_block_town FOREIGN KEY (town_id) REFERENCES public.town (town_id),
@@ -111,8 +111,8 @@ BEGIN
     CREATE TABLE IF NOT EXISTS public.proximity_level (
         level_id       INT          PRIMARY KEY,
         category       VARCHAR(50)  NOT NULL UNIQUE,
-        distance_min_m NUMERIC(8,2),
-        distance_max_m NUMERIC(8,2)
+        distance_min_m NUMERIC(8,2) UNIQUE,
+        distance_max_m NUMERIC(8,2) UNIQUE
     );
     RAISE NOTICE 'proximity_level schema created';
 
